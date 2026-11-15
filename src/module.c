@@ -32,14 +32,21 @@ static bool port_version_checked(const char *v) {
 }
 
 static bool game_ready(void) {
-    if (!g_host.dispatch_lookup) return false;
-    return g_host.dispatch_lookup(BC_FN_LOOKAT) != NULL;
+    if (g_host.dispatch_lookup) return g_host.dispatch_lookup(BC_FN_LOOKAT) != NULL;
+    return bc_guest_readable(BC_FN_LOOKAT, 16u) && bc_ld32(BC_FN_LOOKAT) == 0xe92d4800u;
 }
 
 static void worker(void *unused) {
     (void)unused;
     uint64_t t0 = bc_now_ms();
     unsigned polls = 0;
+    BC_LOG("boot: resolving the port's exports");
+    if (!bc_host_resolve()) {
+        BC_LOG("boot: host resolve FAILED - a required port symbol is missing");
+        g_install_state = BC_INSTALL_FAILED;
+        g_mh.log("[bettercamera] required port symbols missing: feature off, boot unaffected\n");
+        return;
+    }
     BC_LOG("boot: waiting for the game code (dispatch target 0x21c33c)");
     while (bc_now_ms() - t0 < 60000u) {
         if (g_shutdown_done) return;
@@ -74,9 +81,14 @@ static void module_shutdown(void) {
 
 MHGU_ENGINE_MODULE_EXPORT bool mhgu_engine_module_entry(const MhguHost *host, MhguEngineModule *out) {
     if (!host || !out) return false;
-    if (host->api < 1 || host->api > MHGU_ENGINE_MODULE_API) return false;
+    if (host->api < 1 || host->api > MHGU_ENGINE_MODULE_API) {
+        host->log("[bettercamera] built for engine module API %u, this port has %u: not loaded\n",
+            (unsigned)MHGU_ENGINE_MODULE_API, host->api ? (unsigned)host->api : 0u);
+        return false;
+    }
     if (!port_version_checked(host->port_version)) {
-        host->log("[bettercamera] port %s unverified: not loaded\n", host->port_version ? host->port_version : "?");
+        host->log("[bettercamera] port %s unverified (checked: 0.16., 0.17.): not loaded\n",
+            host->port_version ? host->port_version : "?");
         return false;
     }
     g_mh = *host;
