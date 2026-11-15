@@ -10,6 +10,14 @@ on:
           - release
           - debug
         default: release
+      debug_level:
+        description: Debug logging (0 = none, 1 = lifecycle, 2 = verbose + BetterCamera_logs.txt)
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "2"
+        default: "0"
       platforms:
         description: Platforms to build
         type: choice
@@ -103,7 +111,7 @@ jobs:
         run: |
           echo "version=$(cat VERSION)+${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - name: Build the DLL and package it
-        run: make package-windows BUILD=${{ inputs.build_type }} VERSION="${{ steps.ver.outputs.version }}"
+        run: make package-windows BUILD=${{ inputs.build_type }} VERSION="${{ steps.ver.outputs.version }}" DEBUG_LEVEL=${{ inputs.debug_level }}
       - name: Show what was built
         run: |
           ls -l build/pkg-windows/engine_modules/${MODULE_NAME}
@@ -133,7 +141,7 @@ jobs:
         run: |
           echo "version=$(cat VERSION)+${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - name: Build the shared library and package it
-        run: make package-linux BUILD=${{ inputs.build_type }} VERSION="${{ steps.ver.outputs.version }}"
+        run: make package-linux BUILD=${{ inputs.build_type }} VERSION="${{ steps.ver.outputs.version }}" DEBUG_LEVEL=${{ inputs.debug_level }}
       - name: Zip the package
         run: |
           cd build/pkg-linux
