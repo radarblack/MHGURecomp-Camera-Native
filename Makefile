@@ -2,10 +2,19 @@ NAME      := BetterCamera
 VERSION   ?= 0.1.0
 BUILD     ?= release
 OUT       ?= build
+# 0 = release (all logging compiles away and src/debug.c is excluded), 1 = lifecycle log,
+# 2 = verbose (adds per-frame telemetry, sampled). Example: make linux DEBUG_LEVEL=2
+DEBUG_LEVEL ?= 0
 
 SRC := src/module.c src/safearea.c src/config.c src/host.c src/platform.c
 OBJ_FLAGS_COMMON := -std=c11 -Wall -Wextra -Wno-unused-parameter -fvisibility=hidden -Isrc \
-    -DBC_VERSION='"$(VERSION)"'
+    -DBC_VERSION='"$(VERSION)"' -DBC_DEBUG=$(DEBUG_LEVEL)
+
+ifeq ($(DEBUG_LEVEL),0)
+SRC := $(filter-out src/debug.c,$(SRC))
+else
+SRC += src/debug.c
+endif
 
 ifeq ($(BUILD),debug)
 OPT := -O0 -g
