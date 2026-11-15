@@ -3,32 +3,31 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define BC_MODULE_API 1
-#define BC_MODULE_API_NAME "mhgu_engine_module_api"
-#define BC_MODULE_ENTRY_NAME "mhgu_engine_module_entry"
+#define MHGU_ENGINE_MODULE_API 1
 
 #ifdef __cplusplus
-#define BC_MODULE_LINK extern "C"
+#define MHGU_ENGINE_MODULE_LINK extern "C"
 #else
-#define BC_MODULE_LINK
+#define MHGU_ENGINE_MODULE_LINK
 #endif
 #ifdef _WIN32
-#define BC_MODULE_EXPORT BC_MODULE_LINK __declspec(dllexport)
+#define MHGU_ENGINE_MODULE_EXPORT MHGU_ENGINE_MODULE_LINK __declspec(dllexport)
 #else
-#define BC_MODULE_EXPORT BC_MODULE_LINK __attribute__((visibility("default")))
+#define MHGU_ENGINE_MODULE_EXPORT MHGU_ENGINE_MODULE_LINK __attribute__((visibility("default")))
 #endif
 
-typedef struct BcModuleHost {
-    uint32_t api;
+typedef struct MhguHost {
     void (*log)(const char *fmt, ...);
     bool (*setting)(const char *key, char *out, size_t out_size);
     const char *module_dir;
     const char *port_version;
-} BcModuleHost;
+} MhguHost;
 
-typedef struct BcModule {
+typedef struct MhguEngineModule {
     const char *name;
     void (*shutdown)(void);
-} BcModule;
+} MhguEngineModule;
 
-typedef bool (*BcModuleEntry)(const BcModuleHost *host, BcModule *out);
+typedef bool (*MhguEngineModuleEntry)(const MhguHost *host, MhguEngineModule *out);
+#define MHGU_ENGINE_MODULE_API_NAME "mhgu_engine_module_api"
+#define MHGU_ENGINE_MODULE_ENTRY_NAME "mhgu_engine_module_entry"
