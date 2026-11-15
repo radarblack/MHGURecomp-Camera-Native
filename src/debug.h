@@ -12,5 +12,8 @@
 #define BC_LOGV(...) ((void)0)
 #endif
 
+#if BC_DEBUG > 0
 void bc_debug_set_sink(void (*sink)(const char *fmt, ...));
+void bc_debug_open_file(const char *module_dir);
 void bc_debug_log(const char *fmt, ...);
+#endif
