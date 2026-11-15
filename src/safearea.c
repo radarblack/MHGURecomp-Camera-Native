@@ -21,25 +21,28 @@ static int g_gc_logged;
 
 enum { R_OK, R_CFG_OFF, R_CAM_BAD, R_GC_BAD, R_QUEST, R_ASPECT, R_NOPLAYER, R_TILT_IDLE };
 static const char *const g_reason[] = {
-    "ok", "feature off (SafeAreaCamera=0)", "camera pointer not sane", "sGameControl not ready",
+    "ok", "feature off (SafeAreaCamera=0)", "camera pointer not readable (not mapped or not a camera object)", "sGameControl not ready (pointer null or object not readable)",
     "quest area (the game's own camera runs)", "aspect outside the gameplay range", "no local player",
     "stick below the dead zone"};
 
 static uint32_t local_player(void) {
     uint32_t gcp = bc_ld32(BC_G_SGAMECONTROL);
     uint32_t spp = bc_ld32(BC_G_SPLAYER);
-    if (!bc_sane(gcp) || !bc_sane(spp)) return 0;
+    if (!gcp || !spp) return 0;
     uint32_t slot = bc_ld8(gcp + BC_GC_PLAYER_SLOT);
     if (slot > 3) return 0;
-    uint32_t player = bc_ld32(spp + BC_SC_PLAYER_SLOTS + 4u * slot);
-    return bc_sane(player) ? player : 0;
+    uint32_t slot_addr = spp + BC_SC_PLAYER_SLOTS + 4u * slot;
+    if (!bc_guest_readable(slot_addr, 4u)) return 0;
+    uint32_t player = bc_ld32(slot_addr);
+    if (!player || !bc_guest_readable(player, 4u)) return 0;
+    return player;
 }
 
 static uint32_t vfunc(uint32_t obj, uint32_t off) {
+    if (!bc_guest_readable(obj, 4u)) return 0;
     uint32_t vt = bc_ld32(obj);
-    if (!bc_sane(vt)) return 0;
-    uint32_t fn = bc_ld32(vt + off);
-    return bc_sane(fn) ? fn : 0;
+    if (!vt || !bc_guest_readable(vt + off, 4u)) return 0;
+    return bc_ld32(vt + off);
 }
 
 static uint32_t query_action(uint32_t player, uint32_t id) {
@@ -92,12 +95,12 @@ static void detour_lookat(BcCpu *c) {
             reason = R_CFG_OFF;
             break;
         }
-        if (!bc_sane(cam)) {
+        if (!bc_guest_readable(cam, 0x70u)) {
             reason = R_CAM_BAD;
             break;
         }
         uint32_t gcp = bc_ld32(BC_G_SGAMECONTROL);
-        if (!bc_sane(gcp)) {
+        if (!gcp || !bc_guest_readable(gcp, 0x80u)) {
             reason = R_GC_BAD;
             break;
         }
@@ -184,14 +187,18 @@ bool bc_safearea_install(void) {
         BC_LOG("install: already armed at 0x21c33c");
         return true;
     }
+    if (!bc_guest_readable(BC_FN_LOOKAT, 16u)) {
+        BC_LOG("install: FAIL - the look-at 0x21c33c is not readable yet (the game code is not mapped)");
+        return false;
+    }
     uint32_t w0 = bc_ld32(BC_FN_LOOKAT), w1 = bc_ld32(BC_FN_LOOKAT + 4u), w2 = bc_ld32(BC_FN_LOOKAT + 8u),
              w3 = bc_ld32(BC_FN_LOOKAT + 12u);
     BC_LOG("install: look-at 0x21c33c words: %08x %08x %08x %08x (expected %08x = push {r11,lr})", (unsigned)w0,
-        (unsigned)w1, (unsigned)w2, (unsigned)w3, 0xe92d4000u);
+        (unsigned)w1, (unsigned)w2, (unsigned)w3, 0xe92d4800u);
     (void)w1;
     (void)w2;
     (void)w3;
-    if (w0 != 0xe92d4000u) {
+    if (w0 != 0xe92d4800u) {
         BC_LOG("install: FAIL - target bytes do not match (code moved or a different game build): hooking would "
                "corrupt the port - feature off");
         return false;
