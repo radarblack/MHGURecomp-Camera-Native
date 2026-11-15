@@ -6,6 +6,7 @@
 
 #ifndef _WIN32
 #include <dlfcn.h>
+#include <sys/mman.h>
 #endif
 
 #ifdef _WIN32
@@ -24,6 +25,19 @@ static DWORD WINAPI bc_thread_tramp(LPVOID p) {
     a->fn(a->arg);
     free(a);
     return 0;
+}
+bool bc_guest_readable(uint32_t guest_addr, uint32_t len) {
+    const unsigned char *a = (const unsigned char *)(uintptr_t)(0x10000000000ull + guest_addr);
+    size_t done = 0;
+    while (done < len) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery(a + done, &mbi, sizeof mbi)) return false;
+        if (mbi.State != MEM_COMMIT) return false;
+        if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+        size_t off = (size_t)((a + done) - (const unsigned char *)mbi.BaseAddress);
+        done = off + mbi.RegionSize;
+    }
+    return true;
 }
 bool bc_thread_start(BcThread *t, BcThreadFn fn, void *arg) {
     BcThreadArgs *a = (BcThreadArgs *)malloc(sizeof *a);
@@ -62,6 +76,12 @@ static void *bc_thread_tramp(void *p) {
     a->fn(a->arg);
     free(a);
     return NULL;
+}
+bool bc_guest_readable(uint32_t guest_addr, uint32_t len) {
+    const unsigned char *a = (const unsigned char *)(uintptr_t)(0x10000000000ull + guest_addr);
+    uintptr_t page = (uintptr_t)a & ~(uintptr_t)0xfffull;
+    size_t span = ((uintptr_t)a + len - page + 0xfffull) & ~(size_t)0xfffull;
+    return msync((void *)page, span, MS_ASYNC) == 0;
 }
 bool bc_thread_start(BcThread *t, BcThreadFn fn, void *arg) {
     BcThreadArgs *a = (BcThreadArgs *)malloc(sizeof *a);
