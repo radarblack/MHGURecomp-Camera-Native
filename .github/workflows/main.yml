@@ -103,20 +103,20 @@ jobs:
         run: |
           echo "version=$(cat VERSION)+${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - name: Build the DLL and package it
-        run: cd module && make package-windows BUILD=${{ inputs.build_type }} VERSION="${{ steps.ver.outputs.version }}"
+        run: make package-windows BUILD=${{ inputs.build_type }} VERSION="${{ steps.ver.outputs.version }}"
       - name: Show what was built
         run: |
-          ls -l module/build/pkg-windows/engine_modules/${MODULE_NAME}
-          x86_64-w64-mingw32-objdump -p module/build/windows/${MODULE_NAME}.dll | sed -n '/Ordinal\/Name Pointer/,/^$/p'
+          ls -l build/pkg-windows/engine_modules/${MODULE_NAME}
+          x86_64-w64-mingw32-objdump -p build/windows/${MODULE_NAME}.dll | sed -n '/Ordinal\/Name Pointer/,/^$/p'
       - name: Zip the package
         run: |
-          cd module/build/pkg-windows
+          cd build/pkg-windows
           zip -r "../${MODULE_NAME}-windows-${{ steps.ver.outputs.version }}.zip" engine_modules
       - name: Upload the package
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.MODULE_NAME }}-windows
-          path: module/build/${{ env.MODULE_NAME }}-windows-*.zip
+          path: build/${{ env.MODULE_NAME }}-windows-*.zip
           if-no-files-found: error
 
   linux:
@@ -133,16 +133,16 @@ jobs:
         run: |
           echo "version=$(cat VERSION)+${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - name: Build the shared library and package it
-        run: cd module && make package-linux BUILD=${{ inputs.build_type }} VERSION="${{ steps.ver.outputs.version }}"
+        run: make package-linux BUILD=${{ inputs.build_type }} VERSION="${{ steps.ver.outputs.version }}"
       - name: Zip the package
         run: |
-          cd module/build/pkg-linux
+          cd build/pkg-linux
           zip -r "../${MODULE_NAME}-linux-${{ steps.ver.outputs.version }}.zip" engine_modules
       - name: Upload the package
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.MODULE_NAME }}-linux
-          path: module/build/${{ env.MODULE_NAME }}-linux-*.zip
+          path: build/${{ env.MODULE_NAME }}-linux-*.zip
           if-no-files-found: error
 
   release:
