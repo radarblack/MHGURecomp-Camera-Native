@@ -2,21 +2,31 @@
 
 #include <string.h>
 
+#include "debug.h"
 #include "platform.h"
 
 BcHost g_host;
 
+static void *sym(const char *name, int required) {
+    void *p = bc_find_symbol(name);
+    if (p) BC_LOG("host: %s found at %p", name, p);
+    else if (required) BC_LOG("host: %s MISSING (required) - the module cannot work on this port build", name);
+    else BC_LOG("host: %s missing (optional)", name);
+    return p;
+}
+
 bool bc_host_resolve(void) {
     memset(&g_host, 0, sizeof g_host);
     bool ok = true;
-    g_host.fnhook_set = (bool (*)(uint32_t, uint32_t))bc_find_symbol("fnhook_set");
+    g_host.fnhook_set = (bool (*)(uint32_t, uint32_t))sym("fnhook_set", 1);
     ok &= g_host.fnhook_set != NULL;
-    g_host.fnhook_get = (uint32_t (*)(uint32_t))bc_find_symbol("fnhook_get");
-    g_host.fnhook_call_original = (void (*)(BcCpu *, uint32_t))bc_find_symbol("fnhook_call_original");
+    g_host.fnhook_get = (uint32_t (*)(uint32_t))sym("fnhook_get", 0);
+    g_host.fnhook_call_original = (void (*)(BcCpu *, uint32_t))sym("fnhook_call_original", 1);
     ok &= g_host.fnhook_call_original != NULL;
-    g_host.hle_register = (uint32_t (*)(const char *, BcHostFn))bc_find_symbol("hle_register");
+    g_host.hle_register = (uint32_t (*)(const char *, BcHostFn))sym("hle_register", 1);
     ok &= g_host.hle_register != NULL;
-    g_host.guest_call = (void (*)(BcCpu *, uint32_t))bc_find_symbol("guest_call");
-    g_host.dispatch_lookup = (void *(*)(uint32_t))bc_find_symbol("dispatch_lookup");
+    g_host.guest_call = (void (*)(BcCpu *, uint32_t))sym("guest_call", 0);
+    g_host.dispatch_lookup = (void *(*)(uint32_t))sym("dispatch_lookup", 0);
+    if (!ok) BC_LOG("host: resolution FAILED (a required symbol is missing)");
     return ok;
 }
