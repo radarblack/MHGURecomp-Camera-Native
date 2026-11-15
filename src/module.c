@@ -14,7 +14,7 @@
 
 static const char *const k_checked_ports[] = {"0.16.", "0.17."};
 
-static BcModuleHost g_mh;
+static MhguHost g_mh;
 static volatile bool g_shutdown_done;
 
 static BcThread g_worker;
@@ -63,9 +63,9 @@ static void module_shutdown(void) {
     if (g_worker.started) bc_thread_join(&g_worker, 5000u);
 }
 
-BC_MODULE_EXPORT bool mhgu_engine_module_entry(const BcModuleHost *host, BcModule *out) {
+MHGU_ENGINE_MODULE_EXPORT bool mhgu_engine_module_entry(const MhguHost *host, MhguEngineModule *out) {
     if (!host || !out) return false;
-    if (host->api < 1 || host->api > BC_MODULE_API) return false;
+    if (host->api < 1 || host->api > MHGU_ENGINE_MODULE_API) return false;
     if (!port_version_checked(host->port_version)) {
         host->log("[bettercamera] port %s unverified: not loaded\n", host->port_version ? host->port_version : "?");
         return false;
@@ -84,4 +84,4 @@ BC_MODULE_EXPORT bool mhgu_engine_module_entry(const BcModuleHost *host, BcModul
     return true;
 }
 
-BC_MODULE_EXPORT const uint32_t mhgu_engine_module_api = BC_MODULE_API;
+MHGU_ENGINE_MODULE_EXPORT const uint32_t mhgu_engine_module_api = MHGU_ENGINE_MODULE_API;
