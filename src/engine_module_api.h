@@ -17,6 +17,7 @@
 #endif
 
 typedef struct MhguHost {
+    uint32_t api;
     void (*log)(const char *fmt, ...);
     bool (*setting)(const char *key, char *out, size_t out_size);
     const char *module_dir;
