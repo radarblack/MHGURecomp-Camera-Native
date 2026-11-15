@@ -1,7 +1,9 @@
 #include "safearea.h"
 
 #include <math.h>
+#include <string.h>
 
+#include "debug.h"
 #include "safearea_math.h"
 
 #include "config.h"
@@ -11,17 +13,17 @@
 
 static uint32_t g_hooked_fn;
 static uint32_t g_hle_id;
+static uint32_t g_frames;
+static int g_last_active;
+static uint8_t g_last_area = 0xff;
+static int g_vt_dumped;
+static int g_gc_logged;
 
-static bool gc_ready(void) {
-    uint32_t gcp = bc_ld32(BC_G_SGAMECONTROL);
-    return bc_sane(gcp);
-}
-
-static uint8_t area_type(void) {
-    uint32_t gcp = bc_ld32(BC_G_SGAMECONTROL);
-    if (!bc_sane(gcp)) return 0xff;
-    return bc_ld8(gcp + BC_GC_AREA_TYPE);
-}
+enum { R_OK, R_CFG_OFF, R_CAM_BAD, R_GC_BAD, R_QUEST, R_ASPECT, R_NOPLAYER, R_TILT_IDLE };
+static const char *const g_reason[] = {
+    "ok", "feature off (SafeAreaCamera=0)", "camera pointer not sane", "sGameControl not ready",
+    "quest area (the game's own camera runs)", "aspect outside the gameplay range", "no local player",
+    "stick below the dead zone"};
 
 static uint32_t local_player(void) {
     uint32_t gcp = bc_ld32(BC_G_SGAMECONTROL);
@@ -69,50 +71,153 @@ static float stick_axis(uint32_t player, uint32_t pos_id, uint32_t neg_id, uint8
     return v;
 }
 
+static void dump_player_vtables(uint32_t player) {
+    uint32_t vt = bc_ld32(player);
+    if (!bc_sane(vt)) {
+        BC_LOG("guest: player %08x vtable %08x not sane - stick queries will fail", (unsigned)player, (unsigned)vt);
+        return;
+    }
+    BC_LOG("guest: player %08x vt %08x | tilt slot 0x238 -> %08x | action slot 0x2e8 -> %08x", (unsigned)player,
+        (unsigned)vt, (unsigned)bc_ld32(vt + BC_VT_TILT), (unsigned)bc_ld32(vt + BC_VT_CAM_ACTION));
+}
+
 static void detour_lookat(BcCpu *c) {
     uint32_t cam = c->r[1];
-    if (g_cfg.safe_area_camera && bc_sane(cam) && area_type() != 0xff && gc_ready()) {
-        float aspect = bc_ldf(cam + BC_CAM_ASPECT);
-        if (aspect >= g_cfg.aspect_min && aspect <= g_cfg.aspect_max) {
-            uint32_t player = local_player();
-            if (player) {
-                uint32_t tilt = query_tilt(player);
-                float mag = 0.0f;
-                if (tilt > 0x1eu) mag = (float)(tilt < 0x200u ? tilt : 0x200u) - 30.0f;
-                if (mag > 0.0f) {
-                    uint8_t invert = bc_ld8(bc_ld32(BC_G_SGAMECONTROL) + BC_GC_INVERT);
-                    float yaw_in = stick_axis(player, 3, 4, 0x02, invert);
-                    float pitch_in = stick_axis(player, 1, 2, 0x01, invert);
-                    float speed_scale = 1.0f;
-                    uint8_t cs = bc_ld8(bc_ld32(BC_G_SGAMECONTROL) + BC_GC_CAM_SPEED);
-                    if (cs == 0) speed_scale = 0.75f;
-                    else if (cs > 1) speed_scale = 1.25f;
-                    float deg = mag / 482.0f * g_cfg.speed * speed_scale;
-                    float eye[3], target[3];
-                    for (int i = 0; i < 3; i++) {
-                        eye[i] = bc_ldf(cam + BC_CAM_EYE + 4u * (uint32_t)i);
-                        target[i] = bc_ldf(cam + BC_CAM_TARGET + 4u * (uint32_t)i);
-                    }
-                    bc_orbit(eye, target, yaw_in * deg, -pitch_in * deg, g_cfg.pitch_min, g_cfg.pitch_max);
-                    for (int i = 0; i < 3; i++) {
-                        uint32_t w;
-                        memcpy(&w, &eye[i], 4);
-                        bc_st32(cam + BC_CAM_EYE + 4u * (uint32_t)i, w);
-                    }
-                }
-            }
+    g_frames++;
+    int sample = (g_frames % 30u) == 1u;
+    int active = 0;
+    int reason = R_TILT_IDLE;
+    do {
+        if (!g_cfg.safe_area_camera) {
+            reason = R_CFG_OFF;
+            break;
         }
+        if (!bc_sane(cam)) {
+            reason = R_CAM_BAD;
+            break;
+        }
+        uint32_t gcp = bc_ld32(BC_G_SGAMECONTROL);
+        if (!bc_sane(gcp)) {
+            reason = R_GC_BAD;
+            break;
+        }
+        if (!g_gc_logged) {
+            g_gc_logged = 1;
+            BC_LOG("guest: sGameControl = %08x", (unsigned)gcp);
+        }
+        uint8_t area = bc_ld8(gcp + BC_GC_AREA_TYPE);
+        if (area != g_last_area) {
+            BC_LOG("area: %u -> %u (%s)", (unsigned)g_last_area, (unsigned)area,
+                area == 0xff ? "QUEST - module idle" : "safe area - module armed");
+            g_last_area = area;
+        }
+        if (area == 0xff) {
+            reason = R_QUEST;
+            break;
+        }
+        float aspect = bc_ldf(cam + BC_CAM_ASPECT);
+        if (aspect < g_cfg.aspect_min || aspect > g_cfg.aspect_max) {
+            reason = R_ASPECT;
+            break;
+        }
+        uint32_t player = local_player();
+        if (!player) {
+            reason = R_NOPLAYER;
+            break;
+        }
+        if (!g_vt_dumped) {
+            g_vt_dumped = 1;
+            dump_player_vtables(player);
+        }
+        uint32_t tilt = query_tilt(player);
+        float mag = 0.0f;
+        if (tilt > 0x1eu) mag = (float)(tilt < 0x200u ? tilt : 0x200u) - 30.0f;
+        if (mag <= 0.0f) {
+            reason = R_TILT_IDLE;
+            break;
+        }
+        uint8_t invert = bc_ld8(bc_ld32(BC_G_SGAMECONTROL) + BC_GC_INVERT);
+        float yaw_in = stick_axis(player, 3, 4, 0x02, invert);
+        float pitch_in = stick_axis(player, 1, 2, 0x01, invert);
+        float speed_scale = 1.0f;
+        uint8_t cs = bc_ld8(bc_ld32(BC_G_SGAMECONTROL) + BC_GC_CAM_SPEED);
+        if (cs == 0) speed_scale = 0.75f;
+        else if (cs > 1) speed_scale = 1.25f;
+        float deg = mag / 482.0f * g_cfg.speed * speed_scale;
+        float eye[3], target[3];
+        for (int i = 0; i < 3; i++) {
+            eye[i] = bc_ldf(cam + BC_CAM_EYE + 4u * (uint32_t)i);
+            target[i] = bc_ldf(cam + BC_CAM_TARGET + 4u * (uint32_t)i);
+        }
+        bc_orbit(eye, target, yaw_in * deg, -pitch_in * deg, g_cfg.pitch_min, g_cfg.pitch_max);
+        for (int i = 0; i < 3; i++) {
+            uint32_t w;
+            memcpy(&w, &eye[i], 4);
+            bc_st32(cam + BC_CAM_EYE + 4u * (uint32_t)i, w);
+        }
+        active = 1;
+        reason = R_OK;
+        if (sample)
+            BC_LOGV("frame %u: tilt=%u deg=%.3f (yaw %.0f pitch %.0f, speed x%.2f) eye %.1f,%.1f,%.1f",
+                (unsigned)g_frames, (unsigned)tilt, deg, yaw_in, pitch_in, speed_scale, eye[0], eye[1], eye[2]);
+    } while (0);
+    if (active != g_last_active) {
+        if (active) BC_LOG("camera: ORBITING (area %u, tilt active)", (unsigned)g_last_area);
+        else BC_LOG("camera: idle (%s)", g_reason[reason]);
+        g_last_active = active;
+    } else if (!active && sample) {
+        BC_LOGV("frame %u: skip - %s", (unsigned)g_frames, g_reason[reason]);
     }
+    (void)sample;
+    (void)reason;
+    (void)g_reason;
     g_host.fnhook_call_original(c, BC_FN_LOOKAT);
 }
 
 bool bc_safearea_install(void) {
-    if (!g_host.fnhook_set || !g_host.hle_register || !g_host.guest_call) return false;
-    if (g_hooked_fn) return true;
+    if (!g_host.fnhook_set || !g_host.hle_register || !g_host.guest_call) {
+        BC_LOG("install: FAIL - host functions missing (fnhook_set=%p hle_register=%p guest_call=%p)",
+            (void *)g_host.fnhook_set, (void *)g_host.hle_register, (void *)g_host.guest_call);
+        return false;
+    }
+    if (g_hooked_fn) {
+        BC_LOG("install: already armed at 0x21c33c");
+        return true;
+    }
+    uint32_t w0 = bc_ld32(BC_FN_LOOKAT), w1 = bc_ld32(BC_FN_LOOKAT + 4u), w2 = bc_ld32(BC_FN_LOOKAT + 8u),
+             w3 = bc_ld32(BC_FN_LOOKAT + 12u);
+    BC_LOG("install: look-at 0x21c33c words: %08x %08x %08x %08x (expected %08x = push {r11,lr})", (unsigned)w0,
+        (unsigned)w1, (unsigned)w2, (unsigned)w3, 0xe92d4000u);
+    (void)w1;
+    (void)w2;
+    (void)w3;
+    if (w0 != 0xe92d4000u) {
+        BC_LOG("install: FAIL - target bytes do not match (code moved or a different game build): hooking would "
+               "corrupt the port - feature off");
+        return false;
+    }
     g_hle_id = g_host.hle_register("bettercamera:lookat", detour_lookat);
-    if (!g_hle_id) return false;
-    if (!g_host.fnhook_set(BC_FN_LOOKAT, g_hle_id)) return false;
+    if (!g_hle_id) {
+        BC_LOG("install: FAIL - hle_register returned 0");
+        return false;
+    }
+    BC_LOG("install: detour registered as hle id %u", (unsigned)g_hle_id);
+    if (!g_host.fnhook_set(BC_FN_LOOKAT, g_hle_id)) {
+        BC_LOG("install: FAIL - fnhook_set(0x21c33c, %u) returned false", (unsigned)g_hle_id);
+        return false;
+    }
+    if (g_host.fnhook_get) {
+        uint32_t rb = g_host.fnhook_get(BC_FN_LOOKAT);
+        if (rb == g_hle_id)
+            BC_LOG("install: HOOK VERIFIED - fnhook_get(0x21c33c) == %u (the look-at now runs BetterCamera)",
+                (unsigned)rb);
+        else
+            BC_LOG("install: WARN - fnhook_get(0x21c33c) = %u, expected %u", (unsigned)rb, (unsigned)g_hle_id);
+    } else {
+        BC_LOG("install: fnhook_set accepted (no fnhook_get to read back - verification by field test)");
+    }
     g_hooked_fn = BC_FN_LOOKAT;
+    BC_LOG("install: armed (gates: area != 255, aspect %.2f..%.2f, tilt > 30)", g_cfg.aspect_min, g_cfg.aspect_max);
     return true;
 }
 
@@ -120,4 +225,5 @@ void bc_safearea_remove(void) {
     if (!g_hooked_fn) return;
     g_host.fnhook_set(g_hooked_fn, 0);
     g_hooked_fn = 0;
+    BC_LOG("install: hook removed");
 }
