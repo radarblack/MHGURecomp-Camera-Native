@@ -83,6 +83,7 @@ MHGU_ENGINE_MODULE_EXPORT bool mhgu_engine_module_entry(const MhguHost *host, Mh
     g_shutdown_done = false;
 #if BC_DEBUG > 0
     bc_debug_set_sink(g_mh.log);
+    bc_debug_open_file(host->module_dir);
 #endif
     BC_LOG("module: BetterCamera v%s entry (module api %u, port %s, dir %s)", BC_VERSION, (unsigned)host->api,
         host->port_version ? host->port_version : "?", host->module_dir ? host->module_dir : "?");
