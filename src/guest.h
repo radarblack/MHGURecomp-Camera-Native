@@ -30,3 +30,7 @@ static inline bool bc_sane(uint32_t a) { return a >= 0x00200000u && a < 0xF00000
 #define BC_BUILDER_PROLOGUE 0xe92d4070u
 #define BC_G_SGAMECONTROL 0x1a8ca48u
 #define BC_GC_AREA_TYPE 0x4cu
+#define BC_G_SPLAYER 0x1a85b58u
+#define BC_GC_SLOT 0x30u
+#define BC_SP_PLAYERS 0x1cu
+#define BC_PL_ROT 0x50u
