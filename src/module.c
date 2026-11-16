@@ -32,8 +32,8 @@ static bool port_version_checked(const char *v) {
 }
 
 static bool game_ready(void) {
-    if (g_host.dispatch_lookup) return g_host.dispatch_lookup(BC_FN_LOOKAT) != NULL;
-    return bc_guest_readable(BC_FN_LOOKAT, 16u) && bc_ld32(BC_FN_LOOKAT) == 0xe92d4800u;
+    if (g_host.dispatch_lookup) return g_host.dispatch_lookup(BC_FN_BUILDER) != NULL;
+    return bc_guest_readable(BC_FN_BUILDER, 16u) && bc_ld32(BC_FN_BUILDER) == 0xe92d4070u;
 }
 
 static void worker(void *unused) {
@@ -47,7 +47,7 @@ static void worker(void *unused) {
         g_mh.log("[bettercamera] required port symbols missing: feature off, boot unaffected\n");
         return;
     }
-    BC_LOG("boot: waiting for the game code (dispatch target 0x21c33c)");
+    BC_LOG("boot: waiting for the game code (dispatch target 0x9c5e4c = the view-matrix builder)");
     while (bc_now_ms() - t0 < 60000u) {
         if (g_shutdown_done) return;
         if (game_ready()) {
