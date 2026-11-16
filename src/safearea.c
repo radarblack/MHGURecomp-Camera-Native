@@ -93,13 +93,25 @@ static int bc_in_quest(void) {
     return zone != 0u && zone != 0xffu;
 }
 
-static int bc_player_pose(float *fx, float *fz, float *pos) {
+static float bc_camera_fov(uint32_t eye_p, uint32_t target_p, uint32_t up_p) {
+    if (!bc_is_main_camera(eye_p, target_p, up_p)) return 0.0f;
+    return bc_ldf(eye_p - BC_CAM_EYE + BC_CAM_FOV);
+}
+
+static int bc_player_pos(float *pos) {
     uint32_t pl = bc_local_player();
     if (!pl || !bc_guest_readable(pl + BC_PL_POS, 0x20u)) return 0;
     for (uint32_t i = 0; i < 3u; i++) {
         pos[i] = bc_ldf(pl + BC_PL_POS + 4u * i);
         if (!(pos[i] == pos[i]) || pos[i] > 1e9f || pos[i] < -1e9f) return 0;
     }
+    return 1;
+}
+
+static int bc_player_pose(float *fx, float *fz, float *pos) {
+    if (!bc_player_pos(pos)) return 0;
+    uint32_t pl = bc_local_player();
+    if (!pl || !bc_guest_readable(pl + BC_PL_ROT, 16u)) return 0;
     float qx = bc_ldf(pl + BC_PL_ROT), qy = bc_ldf(pl + BC_PL_ROT + 4u), qz = bc_ldf(pl + BC_PL_ROT + 8u),
           qw = bc_ldf(pl + BC_PL_ROT + 12u);
     if (!(qx == qx && qy == qy && qz == qz && qw == qw)) return 0;
@@ -186,10 +198,85 @@ static float bc_median(float *a, int n) {
     return a[n / 2];
 }
 
-enum { R_OK, R_CFG_OFF, R_VEC_BAD, R_GC_BAD, R_QUEST, R_UI_OPEN, R_MOUSE_IDLE };
+#define BC_FN_SCHED 0xb66164u
+#define BC_SC_PAUSED 0x40u
+#define BC_SC_LOOP 0x41u
+#define BC_SC_RES 0x54u
+#define BC_RES_PATH 0x08u
+#define BC_EVENT_MS 250u
+#define BC_MENU_NS 150000000ull
+
+enum { S_OVERLAY, S_CHAT, S_TEXT, S_MODFREE, S_MENU, S_MENUCUR, S_RELEASED, S_VIEW, S_EVENT, S_COUNT };
+static const char *const g_signal_name[S_COUNT] = {"the port's menu", "chat", "a text box", "a mod's pointer",
+    "a game menu", "a game menu cursor", "the mouse released", "the game's menu view", "a game event"};
+#define BC_FREEZE_MASK ((1u << S_EVENT) - 1u)
+
+static uint32_t g_sched_hook;
+static uint32_t g_sched_id;
+static uint64_t g_event_ms;
+static int g_seen_relative;
+static int g_seen_view;
+static unsigned g_signals_prev;
+static int g_frozen_prev;
+
+static int bc_sane_addr(uint32_t a) { return a >= 0x08000000u && a < 0xF0000000u && !(a & 3u); }
+
+static void detour_sched(BcCpu *c) {
+    uint32_t sc = c->r[0];
+    if (bc_sane_addr(sc) && bc_guest_readable(sc, 0x58u) && !bc_ld8(sc + BC_SC_LOOP) && !bc_ld8(sc + BC_SC_PAUSED)) {
+        uint32_t res = bc_ld32(sc + BC_SC_RES);
+        if (bc_sane_addr(res) && bc_guest_readable(res + BC_RES_PATH, 8u)) {
+            char path[6];
+            for (uint32_t i = 0; i < 6u; i++) path[i] = (char)bc_ld8(res + BC_RES_PATH + i);
+            if (path[0] == 'e' && path[1] == 'v' && path[2] == 'e' && path[3] == 'n' && path[4] == 't' && path[5] == '\\')
+                g_event_ms = bc_now_ms();
+        }
+    }
+    g_host.fnhook_call_original(c, BC_FN_SCHED);
+}
+
+static unsigned bc_signals(void) {
+    unsigned m = 0;
+    if (g_host.overlay_menu_open && g_host.overlay_menu_open()) m |= 1u << S_OVERLAY;
+    if (g_host.chat_active && g_host.chat_active()) m |= 1u << S_CHAT;
+    if (g_host.textinput_active && g_host.textinput_active()) m |= 1u << S_TEXT;
+    if (g_host.mouse_free && g_host.mouse_free()) m |= 1u << S_MODFREE;
+    if (g_host.menuptr_open && g_host.menuptr_open()) m |= 1u << S_MENU;
+    if (g_host.menuptr_cursor_ran && g_host.menuptr_cursor_ran(BC_MENU_NS)) m |= 1u << S_MENUCUR;
+    if (g_host.sdl_focus && g_host.sdl_relmode) {
+        void *w = g_host.sdl_focus();
+        if (w) {
+            if (g_host.sdl_relmode(w)) g_seen_relative = 1;
+            else if (g_seen_relative) m |= 1u << S_RELEASED;
+        }
+    }
+    if (g_host.view_context) {
+        const char *ctx = g_host.view_context();
+        if (ctx && (ctx[0] == 'T' || ctx[0] == 'F')) g_seen_view = 1;
+        else if (ctx && g_seen_view) m |= 1u << S_VIEW;
+    }
+    if (g_cfg.pause_events && g_event_ms && bc_now_ms() - g_event_ms < BC_EVENT_MS) m |= 1u << S_EVENT;
+    return m;
+}
+
+static void bc_log_signals(unsigned m) {
+    if (m == g_signals_prev) return;
+    g_signals_prev = m;
+    char buf[160];
+    buf[0] = 0;
+    for (int i = 0; i < S_COUNT; i++) {
+        if (!(m & (1u << i))) continue;
+        if (buf[0]) strncat(buf, ", ", sizeof buf - strlen(buf) - 1);
+        strncat(buf, g_signal_name[i], sizeof buf - strlen(buf) - 1);
+    }
+    BC_LOG("camera: gate signals -> %s", buf[0] ? buf : "none");
+}
+
+enum { R_OK, R_CFG_OFF, R_VEC_BAD, R_GC_BAD, R_QUEST, R_UI_OPEN, R_MOUSE_IDLE, R_EVENT };
 static const char *const g_reason[] = {"ok", "feature off (SafeAreaCamera=0)",
     "view vectors not sane (not readable, not finite, or degenerate)", "sGameControl not ready (pointer null or object not readable)",
-    "quest area (the game's own camera runs)", "a text input or chat box is open", "no orbit (accumulator zero, mouse idle)"};
+    "quest area (the game's own camera runs)", "a text input or chat box is open", "no orbit (accumulator zero, mouse idle)",
+    "a game event is playing (the game's own camera runs)"};
 
 static float vec_finite(uint32_t p) {
     for (uint32_t i = 0; i < 3u; i++) {
@@ -286,13 +373,20 @@ static void detour_builder(BcCpu *c) {
             reason = R_QUEST;
             break;
         }
-        if (g_host.textinput_active && g_host.textinput_active()) {
-            reason = R_UI_OPEN;
+        unsigned signals = bc_signals();
+        bc_log_signals(signals);
+        if (signals & (1u << S_EVENT)) {
+            if (g_host.mouse_state) {
+                float jx, jy;
+                g_host.mouse_state(&jx, &jy);
+            }
+            reason = R_EVENT;
             break;
         }
-        if (g_host.chat_active && g_host.chat_active()) {
-            reason = R_UI_OPEN;
-            break;
+        int frozen = g_cfg.pause_ui && (signals & BC_FREEZE_MASK) != 0;
+        if (frozen != g_frozen_prev) {
+            g_frozen_prev = frozen;
+            BC_LOG("camera: mouse look %s", frozen ? "paused (menu, dialogue or UI open)" : "resumed");
         }
         if (!eye_p || !target_p || !up_p || !bc_guest_readable(eye_p, 12u) || !bc_guest_readable(target_p, 12u) ||
             !vec_finite(eye_p) || !vec_finite(target_p)) {
@@ -301,6 +395,7 @@ static void detour_builder(BcCpu *c) {
         }
         float dx = 0.0f, dy = 0.0f;
         if (g_host.mouse_state) g_host.mouse_state(&dx, &dy);
+        if (frozen) dx = dy = 0.0f;
         for (int i = 0; i < 3; i++) {
             eye[i] = bc_ldf(eye_p + 4u * (uint32_t)i);
             target[i] = bc_ldf(target_p + 4u * (uint32_t)i);
@@ -341,11 +436,29 @@ static void detour_builder(BcCpu *c) {
             float behind_yaw;
             if (bc_settle_step(fresh, dx, dy, &behind_yaw)) g_yaw_abs = behind_yaw;
         }
-        float base_r = (g_cfg.hunt_defaults && g_hunt_radius > 0.0f) ? g_hunt_radius : radius;
-        float use_r = g_cfg.hunt_distance > 0.0f ? g_cfg.hunt_distance : base_r * g_cfg.distance_scale;
+        if (g_cfg.target_height >= 0.0f) {
+            float hpos[3];
+            if (bc_player_pos(hpos)) {
+                target[1] = hpos[1] + g_cfg.target_height;
+                bc_stf(target_p + 4u, target[1]);
+            }
+        }
+        float fit_r = 0.0f;
+        float fov_deg = 0.0f;
+        if (g_cfg.fit_height > 0.0f) {
+            fov_deg = bc_camera_fov(eye_p, target_p, up_p);
+            if (fov_deg > 5.0f && fov_deg < 150.0f) fit_r = g_cfg.fit_height * 0.5f / tanf(fov_deg * 0.5f * (M_PI_F / 180.0f));
+        }
+        float hunt_r = (g_cfg.hunt_defaults && g_hunt_radius > 0.0f) ? g_hunt_radius * g_cfg.distance_scale : 0.0f;
+        float use_r;
+        if (g_cfg.hunt_distance > 0.0f) use_r = g_cfg.hunt_distance;
+        else if (fit_r > 0.0f) use_r = fit_r > hunt_r ? fit_r : hunt_r;
+        else use_r = hunt_r > 0.0f ? hunt_r : radius * g_cfg.distance_scale;
         if (fresh)
-            BC_LOG("camera: distance - game %.1f, hunt capture %.1f, scale %.2f, explicit %.1f -> using %.1f", radius,
-                g_hunt_radius, g_cfg.distance_scale, g_cfg.hunt_distance, use_r);
+            BC_LOG("camera: distance - fov %.1f deg, fit height %.0f -> %.1f; hunt capture %.1f (x%.2f); game %.1f; explicit %.1f -> using %.1f; "
+                   "look-at %.0f above the hunter (target y %.1f)",
+                fov_deg, g_cfg.fit_height, fit_r, g_hunt_radius, g_cfg.distance_scale, radius, g_cfg.hunt_distance, use_r,
+                g_cfg.target_height, target[1]);
         float pitch_deg = g_cfg.vertical ? g_pitch_abs
                           : g_cfg.hunt_pitch_deg != 999.0f ? g_cfg.hunt_pitch_deg
                           : (g_cfg.level ? 0.0f
@@ -444,6 +557,16 @@ bool bc_safearea_install(void) {
         BC_LOG("install: fnhook_set accepted (no fnhook_get to read back - verification by field test)");
     }
     g_hooked_fn = BC_FN_BUILDER;
+    if (g_cfg.pause_events) {
+        g_sched_id = g_host.hle_register("bettercamera:scheduler", detour_sched);
+        if (g_sched_id && g_host.fnhook_set(BC_FN_SCHED, g_sched_id)) {
+            g_sched_hook = BC_FN_SCHED;
+            BC_LOG("install: event hook armed at 0x%x (the camera steps aside while a game event plays)", (unsigned)BC_FN_SCHED);
+        } else {
+            BC_LOG("install: WARN - could not hook the event scheduler 0x%x: events will not pause the camera",
+                (unsigned)BC_FN_SCHED);
+        }
+    }
     g_yaw_abs = 0.0f;
     g_pitch_abs = 0.0f;
     g_inherit_pending = 0;
@@ -462,5 +585,9 @@ void bc_safearea_remove(void) {
     if (!g_hooked_fn) return;
     g_host.fnhook_set(g_hooked_fn, 0);
     g_hooked_fn = 0;
+    if (g_sched_hook) {
+        g_host.fnhook_set(g_sched_hook, 0);
+        g_sched_hook = 0;
+    }
     BC_LOG("install: hook removed");
 }
