@@ -38,6 +38,8 @@ static uint32_t g_area_enter_frame;
 static float g_hunt_radius;
 static float g_hunt_pitch_deg;
 
+static float bc_clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+
 static float bc_median(float *a, int n) {
     for (int i = 1; i < n; i++) {
         float v = a[i];
@@ -156,22 +158,33 @@ static void detour_builder(BcCpu *c) {
         }
         if (dx != 0.0f || dy != 0.0f) {
             g_yaw_abs -= dx * BC_MOUSE_DEG_PER_PX * g_cfg.speed * (M_PI_F / 180.0f);
-            if (!g_cfg.level) {
+            if (g_cfg.vertical) {
+                g_pitch_abs += (g_cfg.invert_y ? -dy : dy) * BC_MOUSE_DEG_PER_PX * g_cfg.speed;
+                g_pitch_abs = bc_clampf(g_pitch_abs, g_cfg.pitch_min, g_cfg.pitch_max);
+            } else if (!g_cfg.level) {
                 g_pitch_abs += -dy * BC_MOUSE_DEG_PER_PX * g_cfg.speed;
-                if (g_pitch_abs < g_cfg.pitch_min) g_pitch_abs = g_cfg.pitch_min;
-                if (g_pitch_abs > g_cfg.pitch_max) g_pitch_abs = g_cfg.pitch_max;
+                g_pitch_abs = bc_clampf(g_pitch_abs, g_cfg.pitch_min, g_cfg.pitch_max);
             }
         }
         if (g_inherit_pending) {
             g_inherit_pending = 0;
             g_yaw_abs = atan2f(dxr, dzr);
-            g_pitch_abs = g_cfg.level ? 0.0f : atan2f(dyr, sqrtf(dxr * dxr + dzr * dzr)) * (180.0f / M_PI_F);
+            float game_pitch = atan2f(dyr, sqrtf(dxr * dxr + dzr * dzr)) * (180.0f / M_PI_F);
+            if (g_cfg.vertical) {
+                float start = g_cfg.hunt_pitch_deg != 999.0f ? g_cfg.hunt_pitch_deg
+                              : (g_cfg.level ? 0.0f
+                                 : (g_cfg.hunt_defaults && g_hunt_pitch_deg != 0.0f ? g_hunt_pitch_deg : game_pitch));
+                g_pitch_abs = bc_clampf(start, g_cfg.pitch_min, g_cfg.pitch_max);
+            } else {
+                g_pitch_abs = g_cfg.level ? 0.0f : game_pitch;
+            }
             BC_LOG("camera: orbit anchored at the class's angle (yaw %.1f deg, pitch %.1f deg) - now world-absolute",
                 g_yaw_abs * (180.0f / M_PI_F), g_pitch_abs);
         }
         float use_r = g_cfg.hunt_distance > 0.0f ? g_cfg.hunt_distance
                       : (g_cfg.hunt_defaults && g_hunt_radius > 0.0f ? g_hunt_radius : radius);
-        float pitch_deg = g_cfg.hunt_pitch_deg != 999.0f ? g_cfg.hunt_pitch_deg
+        float pitch_deg = g_cfg.vertical ? g_pitch_abs
+                          : g_cfg.hunt_pitch_deg != 999.0f ? g_cfg.hunt_pitch_deg
                           : (g_cfg.level ? 0.0f
                              : (g_cfg.hunt_defaults && g_hunt_pitch_deg != 0.0f ? g_hunt_pitch_deg : g_pitch_abs));
         if (pitch_deg < g_cfg.pitch_min) pitch_deg = g_cfg.pitch_min;
