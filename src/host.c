@@ -23,7 +23,7 @@ static void *sdl_sym(const char *name) {
     void *r = lib ? bc_sym_in(lib, name) : 0;
     if (!r) r = bc_find_symbol(name);
     if (r) BC_LOG("host: %s found (SDL)", name);
-    else BC_LOG("host: %s missing (SDL) - mouse input unavailable", name);
+    else BC_LOG("host: %s missing (SDL)", name);
     return r;
 }
 
@@ -42,6 +42,13 @@ bool bc_host_resolve(void) {
     g_host.mouse_state = (uint32_t (*)(float *, float *))sdl_sym("SDL_GetRelativeMouseState");
     g_host.textinput_active = (bool (*)(void))sym("textinput_active", 0);
     g_host.chat_active = (bool (*)(void))sym("chat_active", 0);
+    g_host.overlay_menu_open = (bool (*)(void))sym("overlay_menu_open", 0);
+    g_host.mouse_free = (bool (*)(void))sym("host_input_mouse_free", 0);
+    g_host.menuptr_open = (bool (*)(void))sym("menuptr_open", 0);
+    g_host.menuptr_cursor_ran = (bool (*)(uint64_t))sym("menuptr_cursor_ran", 0);
+    g_host.view_context = (const char *(*)(void))sym("input_view_context", 0);
+    g_host.sdl_focus = (void *(*)(void))sdl_sym("SDL_GetKeyboardFocus");
+    g_host.sdl_relmode = (bool (*)(void *))sdl_sym("SDL_GetWindowRelativeMouseMode");
     if (!ok) BC_LOG("host: resolution FAILED (a required symbol is missing)");
     return ok;
 }
