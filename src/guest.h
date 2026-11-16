@@ -24,20 +24,9 @@ static inline float bc_ldf(uint32_t a) {
 }
 static inline void bc_st32(uint32_t a, uint32_t v) { memcpy(BC_GPTR(a), &v, sizeof v); }
 static inline void bc_stf(uint32_t a, float v) { memcpy(BC_GPTR(a), &v, sizeof v); }
-static inline bool bc_sane(uint32_t a) { return a >= 0x08000000u && a < 0xF0000000u && !(a & 3); }
+static inline bool bc_sane(uint32_t a) { return a >= 0x00200000u && a < 0xF0000000u && !(a & 3); }
 
-#define BC_FN_LOOKAT 0x21c33cu
+#define BC_FN_BUILDER 0x9c5e4cu
+#define BC_BUILDER_PROLOGUE 0xe92d4070u
 #define BC_G_SGAMECONTROL 0x1a8ca48u
-#define BC_G_SPLAYER 0x1a85b58u
-#define BC_FN_GET_MY_PLAYER 0x276278u
 #define BC_GC_AREA_TYPE 0x4cu
-#define BC_GC_PLAYER_SLOT 0x30u
-#define BC_GC_INVERT 0x64u
-#define BC_GC_CAM_SPEED 0x65u
-#define BC_SC_PLAYER_SLOTS 0x1cu
-#define BC_CAM_ASPECT 0x38u
-#define BC_CAM_EYE 0x40u
-#define BC_CAM_UP 0x50u
-#define BC_CAM_TARGET 0x60u
-#define BC_VT_CAM_ACTION 0x2e8u
-#define BC_VT_TILT 0x238u
