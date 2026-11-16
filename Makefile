@@ -7,7 +7,7 @@ OUT       ?= build
 DEBUG_LEVEL ?= 0
 
 SRC := src/module.c src/safearea.c src/config.c src/host.c src/platform.c
-OBJ_FLAGS_COMMON := -std=c11 -Wall -Wextra -Wno-unused-parameter -fvisibility=hidden -Isrc \
+OBJ_FLAGS_COMMON := -std=c11 -Wall -Wextra -Wno-unused-parameter -fvisibility=hidden -Isrc -Iinclude \
     -DBC_VERSION='"$(VERSION)"' -DBC_DEBUG=$(DEBUG_LEVEL)
 
 ifeq ($(DEBUG_LEVEL),0)
@@ -33,11 +33,11 @@ linux: $(OUT)/linux/$(NAME).so
 
 windows: $(OUT)/windows/$(NAME).dll
 
-$(OUT)/linux/$(NAME).so: $(SRC) src/*.h
+$(OUT)/linux/$(NAME).so: $(SRC) src/*.h include/*.h
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) $(OPT) $(OBJ_FLAGS_COMMON) -D_GNU_SOURCE -fPIC -shared -o $@ $(SRC) -ldl -lpthread -lm
 
-$(OUT)/windows/$(NAME).dll: $(SRC) src/*.h
+$(OUT)/windows/$(NAME).dll: $(SRC) src/*.h include/*.h
 	@mkdir -p $(dir $@)
 	$(WINDOWS_CC) $(OPT) $(OBJ_FLAGS_COMMON) -shared -static-libgcc -o $@ $(SRC) -lm
 
