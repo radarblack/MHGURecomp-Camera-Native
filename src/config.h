@@ -11,6 +11,8 @@ typedef struct BcConfig {
     float speed;
     float pitch_min;
     float pitch_max;
+    bool vertical;
+    bool invert_y;
 } BcConfig;
 
 extern BcConfig g_cfg;
