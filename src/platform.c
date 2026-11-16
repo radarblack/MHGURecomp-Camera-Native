@@ -16,6 +16,14 @@ void *bc_find_symbol(const char *name) {
     HMODULE exe = GetModuleHandleA(NULL);
     return exe ? (void *)GetProcAddress(exe, name) : NULL;
 }
+void *bc_find_symbol_in_lib(const char *lib) {
+    HMODULE m = lib ? GetModuleHandleA(lib) : NULL;
+    return (void *)m;
+}
+void *bc_sym_in(void *lib, const char *name) {
+    HMODULE m = (HMODULE)lib;
+    return m ? (void *)GetProcAddress(m, name) : NULL;
+}
 typedef struct BcThreadArgs {
     BcThreadFn fn;
     void *arg;
@@ -67,6 +75,13 @@ uint64_t bc_now_ms(void) {
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 void *bc_find_symbol(const char *name) { return dlsym(RTLD_DEFAULT, name); }
+void *bc_find_symbol_in_lib(const char *lib) {
+    void *h = lib ? dlopen(lib, RTLD_LAZY | RTLD_NOLOAD) : NULL;
+    return h;
+}
+void *bc_sym_in(void *lib, const char *name) {
+    return lib ? dlsym(lib, name) : NULL;
+}
 typedef struct BcThreadArgs {
     BcThreadFn fn;
     void *arg;
