@@ -13,6 +13,9 @@ typedef struct BcConfig {
     float pitch_max;
     bool vertical;
     bool invert_y;
+    float distance_scale;
+    bool start_behind;
+    float start_yaw_offset;
 } BcConfig;
 
 extern BcConfig g_cfg;
