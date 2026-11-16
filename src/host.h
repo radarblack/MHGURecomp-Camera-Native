@@ -15,6 +15,9 @@ typedef struct BcHost {
     uint32_t (*hle_register)(const char *name, BcHostFn fn);
     void (*guest_call)(BcCpu *c, uint32_t addr);
     void *(*dispatch_lookup)(uint32_t addr);
+    uint32_t (*mouse_state)(float *dx, float *dy);
+    bool (*textinput_active)(void);
+    bool (*chat_active)(void);
 } BcHost;
 
 extern BcHost g_host;
