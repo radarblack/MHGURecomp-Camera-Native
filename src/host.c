@@ -15,6 +15,18 @@ static void *sym(const char *name, int required) {
     return p;
 }
 
+static void *sdl_sym(const char *name) {
+    void *lib = bc_find_symbol_in_lib("SDL3.dll");
+#ifndef _WIN32
+    if (!lib) lib = bc_find_symbol_in_lib("libSDL3.so.0");
+#endif
+    void *r = lib ? bc_sym_in(lib, name) : 0;
+    if (!r) r = bc_find_symbol(name);
+    if (r) BC_LOG("host: %s found (SDL)", name);
+    else BC_LOG("host: %s missing (SDL) - mouse input unavailable", name);
+    return r;
+}
+
 bool bc_host_resolve(void) {
     memset(&g_host, 0, sizeof g_host);
     bool ok = true;
@@ -27,6 +39,9 @@ bool bc_host_resolve(void) {
     ok &= g_host.hle_register != NULL;
     g_host.guest_call = (void (*)(BcCpu *, uint32_t))sym("guest_call", 0);
     g_host.dispatch_lookup = (void *(*)(uint32_t))sym("dispatch_lookup", 0);
+    g_host.mouse_state = (uint32_t (*)(float *, float *))sdl_sym("SDL_GetRelativeMouseState");
+    g_host.textinput_active = (bool (*)(void))sym("textinput_active", 0);
+    g_host.chat_active = (bool (*)(void))sym("chat_active", 0);
     if (!ok) BC_LOG("host: resolution FAILED (a required symbol is missing)");
     return ok;
 }
