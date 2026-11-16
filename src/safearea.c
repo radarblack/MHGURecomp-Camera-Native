@@ -77,13 +77,24 @@ static int bc_is_main_camera(uint32_t eye_p, uint32_t target_p, uint32_t up_p) {
     return 1;
 }
 
-static int bc_player_pose(float *fx, float *fz, float *pos) {
+static uint32_t bc_local_player(void) {
     uint32_t gc = bc_ld32(BC_G_SGAMECONTROL);
     uint32_t sp = bc_ld32(BC_G_SPLAYER);
     if (!gc || !sp || !bc_guest_readable(gc, 0x40u) || !bc_guest_readable(sp, 0x30u)) return 0;
     uint32_t slot = bc_ld32(gc + BC_GC_SLOT);
     if (slot >= 4u) return 0;
-    uint32_t pl = bc_ld32(sp + BC_SP_PLAYERS + 4u * slot);
+    return bc_ld32(sp + BC_SP_PLAYERS + 4u * slot);
+}
+
+static int bc_in_quest(void) {
+    uint32_t pl = bc_local_player();
+    if (!pl || !bc_guest_readable(pl + BC_PL_ZONE, 4u)) return 0;
+    uint8_t zone = bc_ld8(pl + BC_PL_ZONE);
+    return zone != 0u && zone != 0xffu;
+}
+
+static int bc_player_pose(float *fx, float *fz, float *pos) {
+    uint32_t pl = bc_local_player();
     if (!pl || !bc_guest_readable(pl + BC_PL_POS, 0x20u)) return 0;
     for (uint32_t i = 0; i < 3u; i++) {
         pos[i] = bc_ldf(pl + BC_PL_POS + 4u * i);
@@ -153,7 +164,7 @@ static int bc_settle_step(int fresh, float dx, float dy, float *yaw_out) {
             BC_LOG("camera: start-behind settled (hunter pose stable)");
         }
     }
-    *yaw_out = atan2f(fx, fz) + g_cfg.start_yaw_offset * (M_PI_F / 180.0f);
+    *yaw_out = atan2f(-fx, -fz) + g_cfg.start_yaw_offset * (M_PI_F / 180.0f);
     if (!g_snap_logged) {
         g_snap_logged = 1;
         BC_LOG("camera: started behind the hunter (forward %.2f,%.2f -> yaw %.1f deg)", fx, fz,
@@ -193,9 +204,9 @@ static void detour_builder(BcCpu *c) {
     if (g_cfg.main_only) {
         if (!bc_is_main_camera(eye_p, target_p, up_p)) {
             g_other_calls++;
-            if (!g_cam_calls && g_other_calls == 600u && !g_filter_warned) {
+            if (!g_cam_calls && g_other_calls == 30000u && !g_filter_warned) {
                 g_filter_warned = 1;
-                BC_LOG("camera: WARNING - 600 view builds and none look like the main camera (eye*=%08x target*=%08x up*=%08x): "
+                BC_LOG("camera: WARNING - 30000 view builds and none look like the main camera (eye*=%08x target*=%08x up*=%08x): "
                        "set SafeAreaCameraMainOnly=0 if the camera stopped working", (unsigned)eye_p, (unsigned)target_p,
                     (unsigned)up_p);
             }
@@ -249,7 +260,7 @@ static void detour_builder(BcCpu *c) {
         }
         if (area == 0xff) {
             if (g_cfg.hunt_defaults && g_cap_n < BC_CAP_MAX && g_frames - g_area_enter_frame >= 60u &&
-                bc_guest_readable(eye_p, 12u) && bc_guest_readable(target_p, 12u)) {
+                bc_guest_readable(eye_p, 12u) && bc_guest_readable(target_p, 12u) && bc_in_quest()) {
                 float qe[3], qt[3];
                 for (int i = 0; i < 3; i++) {
                     qe[i] = bc_ldf(eye_p + 4u * (uint32_t)i);
@@ -330,8 +341,11 @@ static void detour_builder(BcCpu *c) {
             float behind_yaw;
             if (bc_settle_step(fresh, dx, dy, &behind_yaw)) g_yaw_abs = behind_yaw;
         }
-        float use_r = g_cfg.hunt_distance > 0.0f ? g_cfg.hunt_distance
-                      : (g_cfg.hunt_defaults && g_hunt_radius > 0.0f ? g_hunt_radius : radius) * g_cfg.distance_scale;
+        float base_r = (g_cfg.hunt_defaults && g_hunt_radius > 0.0f) ? g_hunt_radius : radius;
+        float use_r = g_cfg.hunt_distance > 0.0f ? g_cfg.hunt_distance : base_r * g_cfg.distance_scale;
+        if (fresh)
+            BC_LOG("camera: distance - game %.1f, hunt capture %.1f, scale %.2f, explicit %.1f -> using %.1f", radius,
+                g_hunt_radius, g_cfg.distance_scale, g_cfg.hunt_distance, use_r);
         float pitch_deg = g_cfg.vertical ? g_pitch_abs
                           : g_cfg.hunt_pitch_deg != 999.0f ? g_cfg.hunt_pitch_deg
                           : (g_cfg.level ? 0.0f
@@ -358,10 +372,15 @@ static void detour_builder(BcCpu *c) {
         pitch_deg_out = pitch_deg;
         active = (dx != 0.0f || dy != 0.0f);
         reason = R_OK;
-        if (sample)
-            BC_LOGV("frame %u: mouse %.1f,%.1f yaw %.1f pitch %.1f | eye %.1f,%.1f,%.1f | game up %.3f,%.3f,%.3f",
+#if BC_DEBUG > 1
+        if (sample) {
+            float hf[2] = {0.0f, 0.0f}, hp[3];
+            int hv = bc_player_pose(&hf[0], &hf[1], hp);
+            BC_LOGV("frame %u: mouse %.1f,%.1f yaw %.1f pitch %.1f | eye %.1f,%.1f,%.1f | game up %.3f,%.3f,%.3f | radius game %.1f used %.1f | hunter fwd %s%.2f,%.2f",
                 (unsigned)g_frames, dx, dy, g_yaw_abs * (180.0f / M_PI_F), pitch_deg_out, eye[0], eye[1], eye[2],
-                up_old[0], up_old[1], up_old[2]);
+                up_old[0], up_old[1], up_old[2], radius, use_r, hv ? "" : "n/a ", hf[0], hf[1]);
+        }
+#endif
     } while (0);
     if (active != g_last_active) {
         if (active) BC_LOG("camera: ORBITING (mouse-driven, area %u, yaw %.1f pitch %.1f)", (unsigned)g_last_area,
