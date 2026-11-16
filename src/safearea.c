@@ -155,7 +155,7 @@ static void detour_builder(BcCpu *c) {
             break;
         }
         if (dx != 0.0f || dy != 0.0f) {
-            g_yaw_abs += dx * BC_MOUSE_DEG_PER_PX * g_cfg.speed * (M_PI_F / 180.0f);
+            g_yaw_abs -= dx * BC_MOUSE_DEG_PER_PX * g_cfg.speed * (M_PI_F / 180.0f);
             if (!g_cfg.level) {
                 g_pitch_abs += -dy * BC_MOUSE_DEG_PER_PX * g_cfg.speed;
                 if (g_pitch_abs < g_cfg.pitch_min) g_pitch_abs = g_cfg.pitch_min;
@@ -185,12 +185,21 @@ static void detour_builder(BcCpu *c) {
             memcpy(&w, &eye[i], 4);
             bc_st32(eye_p + 4u * (uint32_t)i, w);
         }
+        float up_old[3] = {0.0f, 0.0f, 0.0f};
+        if (bc_guest_readable(up_p, 12u)) {
+            for (int i = 0; i < 3; i++) up_old[i] = bc_ldf(up_p + 4u * (uint32_t)i);
+            bc_stf(up_p, 0.0f);
+            bc_stf(up_p + 4u, 1.0f);
+            bc_stf(up_p + 8u, 0.0f);
+        }
+        (void)up_old;
         pitch_deg_out = pitch_deg;
         active = (dx != 0.0f || dy != 0.0f);
         reason = R_OK;
         if (sample)
-            BC_LOGV("frame %u: mouse %.1f,%.1f yaw %.1f pitch %.1f | eye %.1f,%.1f,%.1f", (unsigned)g_frames, dx, dy,
-                g_yaw_abs * (180.0f / M_PI_F), pitch_deg_out, eye[0], eye[1], eye[2]);
+            BC_LOGV("frame %u: mouse %.1f,%.1f yaw %.1f pitch %.1f | eye %.1f,%.1f,%.1f | game up %.3f,%.3f,%.3f",
+                (unsigned)g_frames, dx, dy, g_yaw_abs * (180.0f / M_PI_F), pitch_deg_out, eye[0], eye[1], eye[2],
+                up_old[0], up_old[1], up_old[2]);
     } while (0);
     if (active != g_last_active) {
         if (active) BC_LOG("camera: ORBITING (mouse-driven, area %u, yaw %.1f pitch %.1f)", (unsigned)g_last_area,
