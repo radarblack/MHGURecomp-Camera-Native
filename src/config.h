@@ -5,6 +5,9 @@
 typedef struct BcConfig {
     bool safe_area_camera;
     bool level;
+    bool hunt_defaults;
+    float hunt_distance;
+    float hunt_pitch_deg;
     float speed;
     float pitch_min;
     float pitch_max;
