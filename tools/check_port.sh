@@ -14,7 +14,7 @@ ok() { echo "ok:   $1"; }
 bad() { echo "FAIL: $1"; failures=$((failures + 1)); }
 
 strip_api() { tr -d '\r' < "$1" | sed -e 's://.*$::' -e 's/[[:space:]]*$//' | grep -v '^$'; }
-if diff -q <(strip_api "$here/src/engine_module_api.h") <(strip_api "$port_runtime/engine_module_api.h") >/dev/null; then
+if diff -q <(strip_api "$here/include/engine_module_api.h") <(strip_api "$port_runtime/engine_module_api.h") >/dev/null; then
     ok "engine_module_api.h matches the port's (comments and line endings ignored)"
 else
     bad "engine_module_api.h differs from the port's: re-copy it, check what changed, rebuild"
