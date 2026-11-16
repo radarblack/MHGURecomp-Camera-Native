@@ -6,10 +6,10 @@
 
 #include "debug.h"
 
-BcConfig g_cfg = {true, true, true, 0.0f, 999.0f, 1.0f, -80.0f, 89.0f};
+BcConfig g_cfg = {true, true, true, 0.0f, 999.0f, 1.0f, -10.0f, 89.0f, true, false};
 
 static void parse_pair(char *line, const char *key, size_t klen, const char *value) {
-    if (strlen(line) != klen || strncmp(line, key, klen)) return;
+    if (strcmp(line, key)) return;
     if (!strcmp(key, "SafeAreaCamera")) {
         g_cfg.safe_area_camera = atoi(value) != 0;
         BC_LOG("config: SafeAreaCamera = %d", g_cfg.safe_area_camera);
@@ -34,6 +34,12 @@ static void parse_pair(char *line, const char *key, size_t klen, const char *val
     } else if (!strcmp(key, "SafeAreaCameraPitchMax")) {
         g_cfg.pitch_max = (float)atof(value);
         BC_LOG("config: SafeAreaCameraPitchMax = %.1f", g_cfg.pitch_max);
+    } else if (!strcmp(key, "SafeAreaCameraVertical")) {
+        g_cfg.vertical = atoi(value) != 0;
+        BC_LOG("config: SafeAreaCameraVertical = %d", g_cfg.vertical);
+    } else if (!strcmp(key, "SafeAreaCameraInvertY")) {
+        g_cfg.invert_y = atoi(value) != 0;
+        BC_LOG("config: SafeAreaCameraInvertY = %d", g_cfg.invert_y);
     }
 }
 
@@ -65,10 +71,12 @@ bool bc_config_load(const char *module_dir) {
         parse_pair(key, "SafeAreaCameraSpeed", 19, value);
         parse_pair(key, "SafeAreaCameraPitchMin", 22, value);
         parse_pair(key, "SafeAreaCameraPitchMax", 22, value);
+        parse_pair(key, "SafeAreaCameraVertical", 22, value);
+        parse_pair(key, "SafeAreaCameraInvertY", 21, value);
     }
     fclose(f);
-    BC_LOG("config: loaded (SafeAreaCamera=%d Level=%d HuntDefaults=%d Distance=%.1f PitchDeg=%.1f Speed=%.2f Pitch %.1f..%.1f)",
+    BC_LOG("config: loaded (SafeAreaCamera=%d Level=%d HuntDefaults=%d Distance=%.1f PitchDeg=%.1f Speed=%.2f Pitch %.1f..%.1f Vertical=%d InvertY=%d)",
         g_cfg.safe_area_camera, g_cfg.level, g_cfg.hunt_defaults, g_cfg.hunt_distance, g_cfg.hunt_pitch_deg, g_cfg.speed,
-        g_cfg.pitch_min, g_cfg.pitch_max);
+        g_cfg.pitch_min, g_cfg.pitch_max, g_cfg.vertical, g_cfg.invert_y);
     return true;
 }
