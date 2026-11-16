@@ -16,6 +16,7 @@ typedef struct BcConfig {
     float distance_scale;
     bool start_behind;
     float start_yaw_offset;
+    bool main_only;
 } BcConfig;
 
 extern BcConfig g_cfg;
