@@ -6,7 +6,7 @@
 
 #include "debug.h"
 
-BcConfig g_cfg = {true, true, true, 0.0f, 999.0f, 1.0f, -10.0f, 89.0f, true, false, 0.8f, true, 0.0f, true};
+BcConfig g_cfg = {true, true, true, 0.0f, 999.0f, 1.0f, -10.0f, 89.0f, true, false, 0.8f, true, 0.0f, true, 100.0f, 240.0f, true, true};
 
 static void parse_pair(char *line, const char *key, size_t klen, const char *value) {
     if (strcmp(line, key)) return;
@@ -47,9 +47,21 @@ static void parse_pair(char *line, const char *key, size_t klen, const char *val
     } else if (!strcmp(key, "SafeAreaCameraStartBehind")) {
         g_cfg.start_behind = atoi(value) != 0;
         BC_LOG("config: SafeAreaCameraStartBehind = %d", g_cfg.start_behind);
+    } else if (!strcmp(key, "SafeAreaCameraTargetHeight")) {
+        g_cfg.target_height = (float)atof(value);
+        BC_LOG("config: SafeAreaCameraTargetHeight = %.1f", g_cfg.target_height);
+    } else if (!strcmp(key, "SafeAreaCameraFitHeight")) {
+        g_cfg.fit_height = (float)atof(value);
+        BC_LOG("config: SafeAreaCameraFitHeight = %.1f", g_cfg.fit_height);
+    } else if (!strcmp(key, "SafeAreaCameraPauseInMenus")) {
+        g_cfg.pause_ui = atoi(value) != 0;
+        BC_LOG("config: SafeAreaCameraPauseInMenus = %d", g_cfg.pause_ui);
+    } else if (!strcmp(key, "SafeAreaCameraPauseInEvents")) {
+        g_cfg.pause_events = atoi(value) != 0;
+        BC_LOG("config: SafeAreaCameraPauseInEvents = %d", g_cfg.pause_events);
     } else if (!strcmp(key, "SafeAreaCameraMainOnly")) {
         g_cfg.main_only = atoi(value) != 0;
-        BC_LOG("config: SafeAreaCameraMainOnly = %d", g_cfg.main_only);
+        BC_LOG("config: SafeAreaCameraMainOnly = %d", g_cfg.main_only, g_cfg.target_height, g_cfg.fit_height, g_cfg.pause_ui, g_cfg.pause_events);
     } else if (!strcmp(key, "SafeAreaCameraStartYawOffset")) {
         g_cfg.start_yaw_offset = (float)atof(value);
         BC_LOG("config: SafeAreaCameraStartYawOffset = %.1f", g_cfg.start_yaw_offset);
@@ -90,10 +102,14 @@ bool bc_config_load(const char *module_dir) {
         parse_pair(key, "SafeAreaCameraStartBehind", 25, value);
         parse_pair(key, "SafeAreaCameraStartYawOffset", 28, value);
         parse_pair(key, "SafeAreaCameraMainOnly", 22, value);
+        parse_pair(key, "SafeAreaCameraPauseInMenus", 26, value);
+        parse_pair(key, "SafeAreaCameraPauseInEvents", 27, value);
+        parse_pair(key, "SafeAreaCameraTargetHeight", 26, value);
+        parse_pair(key, "SafeAreaCameraFitHeight", 23, value);
     }
     fclose(f);
-    BC_LOG("config: loaded (SafeAreaCamera=%d Level=%d HuntDefaults=%d Distance=%.1f PitchDeg=%.1f Speed=%.2f Pitch %.1f..%.1f Vertical=%d InvertY=%d DistScale=%.2f StartBehind=%d StartYawOffset=%.1f MainOnly=%d)",
+    BC_LOG("config: loaded (SafeAreaCamera=%d Level=%d HuntDefaults=%d Distance=%.1f PitchDeg=%.1f Speed=%.2f Pitch %.1f..%.1f Vertical=%d InvertY=%d DistScale=%.2f StartBehind=%d StartYawOffset=%.1f MainOnly=%d TargetHeight=%.1f FitHeight=%.1f PauseInMenus=%d PauseInEvents=%d)",
         g_cfg.safe_area_camera, g_cfg.level, g_cfg.hunt_defaults, g_cfg.hunt_distance, g_cfg.hunt_pitch_deg, g_cfg.speed,
-        g_cfg.pitch_min, g_cfg.pitch_max, g_cfg.vertical, g_cfg.invert_y, g_cfg.distance_scale, g_cfg.start_behind, g_cfg.start_yaw_offset, g_cfg.main_only);
+        g_cfg.pitch_min, g_cfg.pitch_max, g_cfg.vertical, g_cfg.invert_y, g_cfg.distance_scale, g_cfg.start_behind, g_cfg.start_yaw_offset, g_cfg.main_only, g_cfg.target_height, g_cfg.fit_height, g_cfg.pause_ui, g_cfg.pause_events);
     return true;
 }
