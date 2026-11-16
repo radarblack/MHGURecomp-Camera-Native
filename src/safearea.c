@@ -217,7 +217,7 @@ static void detour_builder(BcCpu *c) {
         if (snap) {
             float fx, fz;
             if (bc_player_forward(&fx, &fz)) {
-                g_yaw_abs = atan2f(-fx, -fz) + g_cfg.start_yaw_offset * (M_PI_F / 180.0f);
+                g_yaw_abs = atan2f(fx, fz) + g_cfg.start_yaw_offset * (M_PI_F / 180.0f);
                 if (!g_snap_logged) {
                     g_snap_logged = 1;
                     BC_LOG("camera: started behind the hunter (forward %.2f,%.2f -> yaw %.1f deg)", fx, fz,
