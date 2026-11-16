@@ -12,6 +12,8 @@
 void bc_sleep_ms(unsigned ms);
 uint64_t bc_now_ms(void);
 void *bc_find_symbol(const char *name);
+void *bc_find_symbol_in_lib(const char *lib);
+void *bc_sym_in(void *lib, const char *name);
 bool bc_guest_readable(uint32_t guest_addr, uint32_t len);
 
 typedef void (*BcThreadFn)(void *arg);
