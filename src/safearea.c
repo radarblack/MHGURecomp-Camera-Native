@@ -22,11 +22,13 @@ static int g_last_active;
 static uint8_t g_last_area = 0xff;
 static int g_gc_logged;
 static int g_first_call_done;
+static float g_acc_yaw;
+static float g_acc_pitch;
 
 enum { R_OK, R_CFG_OFF, R_VEC_BAD, R_GC_BAD, R_QUEST, R_UI_OPEN, R_MOUSE_IDLE };
 static const char *const g_reason[] = {"ok", "feature off (SafeAreaCamera=0)",
     "view vectors not sane (not readable, not finite, or degenerate)", "sGameControl not ready (pointer null or object not readable)",
-    "quest area (the game's own camera runs)", "a text input or chat box is open", "mouse did not move"};
+    "quest area (the game's own camera runs)", "a text input or chat box is open", "no orbit (accumulator zero, mouse idle)"};
 
 static float vec_finite(uint32_t p) {
     for (uint32_t i = 0; i < 3u; i++) {
@@ -64,9 +66,12 @@ static void detour_builder(BcCpu *c) {
                 (unsigned)target_p, (unsigned)area);
         }
         if (area != g_last_area) {
-            BC_LOG("area: %u -> %u (%s)", (unsigned)g_last_area, (unsigned)area,
-                area == 0xff ? "QUEST - module idle" : "safe area - module armed");
+            BC_LOG("area: %u -> %u (%s)%s", (unsigned)g_last_area, (unsigned)area,
+                area == 0xff ? "QUEST - module idle" : "safe area - module armed",
+                (g_acc_yaw != 0.0f || g_acc_pitch != 0.0f) ? " [orbit accumulator reset]" : "");
             g_last_area = area;
+            g_acc_yaw = 0.0f;
+            g_acc_pitch = 0.0f;
         }
         if (area == 0xff) {
             reason = R_QUEST;
@@ -87,10 +92,6 @@ static void detour_builder(BcCpu *c) {
         }
         float dx = 0.0f, dy = 0.0f;
         if (g_host.mouse_state) g_host.mouse_state(&dx, &dy);
-        if (dx == 0.0f && dy == 0.0f) {
-            reason = R_MOUSE_IDLE;
-            break;
-        }
         for (int i = 0; i < 3; i++) {
             eye[i] = bc_ldf(eye_p + 4u * (uint32_t)i);
             target[i] = bc_ldf(target_p + 4u * (uint32_t)i);
@@ -102,20 +103,27 @@ static void detour_builder(BcCpu *c) {
             break;
         }
         float deg = BC_MOUSE_DEG_PER_PX * g_cfg.speed;
-        bc_orbit(eye, target, dx * deg, -dy * deg, g_cfg.pitch_min, g_cfg.pitch_max);
+        if (dx != 0.0f || dy != 0.0f) {
+            g_acc_yaw += dx * deg;
+            g_acc_pitch += -dy * deg;
+            if (g_acc_pitch < g_cfg.pitch_min) g_acc_pitch = g_cfg.pitch_min;
+            if (g_acc_pitch > g_cfg.pitch_max) g_acc_pitch = g_cfg.pitch_max;
+        }
+        bc_orbit(eye, target, g_acc_yaw, g_acc_pitch, g_cfg.pitch_min, g_cfg.pitch_max);
         for (int i = 0; i < 3; i++) {
             uint32_t w;
             memcpy(&w, &eye[i], 4);
             bc_st32(eye_p + 4u * (uint32_t)i, w);
         }
-        active = 1;
+        active = (dx != 0.0f || dy != 0.0f);
         reason = R_OK;
         if (sample)
-            BC_LOGV("frame %u: mouse %.1f,%.1f -> %.3f deg | eye %.1f,%.1f,%.1f", (unsigned)g_frames, dx, dy, deg,
-                eye[0], eye[1], eye[2]);
+            BC_LOGV("frame %u: mouse %.1f,%.1f acc %.1f/%.1f | eye %.1f,%.1f,%.1f", (unsigned)g_frames, dx, dy,
+                g_acc_yaw, g_acc_pitch, eye[0], eye[1], eye[2]);
     } while (0);
     if (active != g_last_active) {
-        if (active) BC_LOG("camera: ORBITING (mouse-driven, area %u)", (unsigned)g_last_area);
+        if (active) BC_LOG("camera: ORBITING (mouse-driven, area %u, acc %.1f/%.1f)", (unsigned)g_last_area, g_acc_yaw,
+            g_acc_pitch);
         else BC_LOG("camera: idle (%s)", g_reason[reason]);
         g_last_active = active;
     } else if (!active && sample) {
@@ -175,7 +183,9 @@ bool bc_safearea_install(void) {
         BC_LOG("install: fnhook_set accepted (no fnhook_get to read back - verification by field test)");
     }
     g_hooked_fn = BC_FN_BUILDER;
-    BC_LOG("install: armed (gates: area != 255, no UI open, mouse moved; sensitivity %.2f deg/px, pitch %.1f..%.1f)",
+    g_acc_yaw = 0.0f;
+    g_acc_pitch = 0.0f;
+    BC_LOG("install: armed (gates: area != 255, no UI open; mouse orbit is ACCUMULATED - re-applied over the class's re-derived base every frame; sensitivity %.2f deg/px, pitch %.1f..%.1f)",
         BC_MOUSE_DEG_PER_PX * g_cfg.speed, g_cfg.pitch_min, g_cfg.pitch_max);
     return true;
 }
