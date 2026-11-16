@@ -37,8 +37,30 @@ static int g_cap_n;
 static uint32_t g_area_enter_frame;
 static float g_hunt_radius;
 static float g_hunt_pitch_deg;
+static int g_settle;
+static int g_snap_logged;
+static uint64_t g_settle_t0;
+#define BC_SETTLE_MS 500u
 
 static float bc_clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+static int bc_player_forward(float *fx, float *fz) {
+    uint32_t gc = bc_ld32(BC_G_SGAMECONTROL);
+    uint32_t sp = bc_ld32(BC_G_SPLAYER);
+    if (!gc || !sp || !bc_guest_readable(gc, 0x40u) || !bc_guest_readable(sp, 0x30u)) return 0;
+    uint32_t slot = bc_ld32(gc + BC_GC_SLOT);
+    if (slot >= 4u) return 0;
+    uint32_t pl = bc_ld32(sp + BC_SP_PLAYERS + 4u * slot);
+    if (!pl || !bc_guest_readable(pl + BC_PL_ROT, 16u)) return 0;
+    float qx = bc_ldf(pl + BC_PL_ROT), qy = bc_ldf(pl + BC_PL_ROT + 4u), qz = bc_ldf(pl + BC_PL_ROT + 8u),
+          qw = bc_ldf(pl + BC_PL_ROT + 12u);
+    if (!(qx == qx && qy == qy && qz == qz && qw == qw)) return 0;
+    float x = 2.0f * (qx * qz + qw * qy), z = 1.0f - 2.0f * (qx * qx + qy * qy);
+    if (!(x * x + z * z > 1e-4f)) return 0;
+    *fx = x;
+    *fz = z;
+    return 1;
+}
 
 static float bc_median(float *a, int n) {
     for (int i = 1; i < n; i++) {
@@ -166,9 +188,16 @@ static void detour_builder(BcCpu *c) {
                 g_pitch_abs = bc_clampf(g_pitch_abs, g_cfg.pitch_min, g_cfg.pitch_max);
             }
         }
+        int snap = 0;
         if (g_inherit_pending) {
             g_inherit_pending = 0;
             g_yaw_abs = atan2f(dxr, dzr);
+            if (g_cfg.start_behind) {
+                g_settle = 1;
+                g_settle_t0 = bc_now_ms();
+                snap = 1;
+                g_snap_logged = 0;
+            }
             float game_pitch = atan2f(dyr, sqrtf(dxr * dxr + dzr * dzr)) * (180.0f / M_PI_F);
             if (g_cfg.vertical) {
                 float start = g_cfg.hunt_pitch_deg != 999.0f ? g_cfg.hunt_pitch_deg
@@ -181,8 +210,23 @@ static void detour_builder(BcCpu *c) {
             BC_LOG("camera: orbit anchored at the class's angle (yaw %.1f deg, pitch %.1f deg) - now world-absolute",
                 g_yaw_abs * (180.0f / M_PI_F), g_pitch_abs);
         }
+        if (!snap && g_settle) {
+            if (dx != 0.0f || dy != 0.0f || bc_now_ms() - g_settle_t0 > BC_SETTLE_MS) g_settle = 0;
+            else snap = 1;
+        }
+        if (snap) {
+            float fx, fz;
+            if (bc_player_forward(&fx, &fz)) {
+                g_yaw_abs = atan2f(-fx, -fz) + g_cfg.start_yaw_offset * (M_PI_F / 180.0f);
+                if (!g_snap_logged) {
+                    g_snap_logged = 1;
+                    BC_LOG("camera: started behind the hunter (forward %.2f,%.2f -> yaw %.1f deg)", fx, fz,
+                        g_yaw_abs * (180.0f / M_PI_F));
+                }
+            }
+        }
         float use_r = g_cfg.hunt_distance > 0.0f ? g_cfg.hunt_distance
-                      : (g_cfg.hunt_defaults && g_hunt_radius > 0.0f ? g_hunt_radius : radius);
+                      : (g_cfg.hunt_defaults && g_hunt_radius > 0.0f ? g_hunt_radius : radius) * g_cfg.distance_scale;
         float pitch_deg = g_cfg.vertical ? g_pitch_abs
                           : g_cfg.hunt_pitch_deg != 999.0f ? g_cfg.hunt_pitch_deg
                           : (g_cfg.level ? 0.0f
@@ -279,6 +323,7 @@ bool bc_safearea_install(void) {
     g_yaw_abs = 0.0f;
     g_pitch_abs = 0.0f;
     g_inherit_pending = 0;
+    g_settle = 0;
     g_cap_n = 0;
     g_hunt_radius = 0.0f;
     g_hunt_pitch_deg = 0.0f;
