@@ -17,6 +17,10 @@ typedef struct BcConfig {
     bool start_behind;
     float start_yaw_offset;
     bool main_only;
+    float target_height;
+    float fit_height;
+    bool pause_ui;
+    bool pause_events;
 } BcConfig;
 
 extern BcConfig g_cfg;
