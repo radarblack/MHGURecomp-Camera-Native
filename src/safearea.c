@@ -105,11 +105,18 @@ static void detour_builder(BcCpu *c) {
         float deg = BC_MOUSE_DEG_PER_PX * g_cfg.speed;
         if (dx != 0.0f || dy != 0.0f) {
             g_acc_yaw += dx * deg;
-            g_acc_pitch += -dy * deg;
-            if (g_acc_pitch < g_cfg.pitch_min) g_acc_pitch = g_cfg.pitch_min;
-            if (g_acc_pitch > g_cfg.pitch_max) g_acc_pitch = g_cfg.pitch_max;
+            if (!g_cfg.level) {
+                g_acc_pitch += -dy * deg;
+                if (g_acc_pitch < g_cfg.pitch_min) g_acc_pitch = g_cfg.pitch_min;
+                if (g_acc_pitch > g_cfg.pitch_max) g_acc_pitch = g_cfg.pitch_max;
+            }
         }
-        bc_orbit(eye, target, g_acc_yaw, g_acc_pitch, g_cfg.pitch_min, g_cfg.pitch_max);
+        float dpitch = g_acc_pitch;
+        if (g_cfg.level) {
+            float base_pitch = atan2f(dyr, sqrtf(dxr * dxr + dzr * dzr)) * (180.0f / M_PI_F);
+            dpitch = -base_pitch;
+        }
+        bc_orbit(eye, target, g_acc_yaw, dpitch, g_cfg.pitch_min, g_cfg.pitch_max);
         for (int i = 0; i < 3; i++) {
             uint32_t w;
             memcpy(&w, &eye[i], 4);
@@ -185,7 +192,8 @@ bool bc_safearea_install(void) {
     g_hooked_fn = BC_FN_BUILDER;
     g_acc_yaw = 0.0f;
     g_acc_pitch = 0.0f;
-    BC_LOG("install: armed (gates: area != 255, no UI open; mouse orbit is ACCUMULATED - re-applied over the class's re-derived base every frame; sensitivity %.2f deg/px, pitch %.1f..%.1f)",
+    BC_LOG("install: armed (gates: area != 255, no UI open; orbit ACCUMULATED and re-applied over the class's re-derived base every frame%s; sensitivity %.2f deg/px, pitch %.1f..%.1f)",
+        g_cfg.level ? "; LEVEL mode: the view is held even with the ground" : "",
         BC_MOUSE_DEG_PER_PX * g_cfg.speed, g_cfg.pitch_min, g_cfg.pitch_max);
     return true;
 }
