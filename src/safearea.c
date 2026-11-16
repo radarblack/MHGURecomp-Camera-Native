@@ -40,25 +40,125 @@ static float g_hunt_pitch_deg;
 static int g_settle;
 static int g_snap_logged;
 static uint64_t g_settle_t0;
-#define BC_SETTLE_MS 500u
+static int g_pose_valid;
+static float g_pos_ref[3];
+static float g_pos_prev[3];
+static float g_fwd_ref[2];
+static uint64_t g_stable_t0;
+static uint32_t g_cam_calls;
+static uint32_t g_other_calls;
+static int g_cam_logged;
+static int g_filter_warned;
+#define BC_SETTLE_MAX_MS 20000u
+#define BC_STABLE_MS 700u
+#define BC_WARP_CM 500.0f
+#define BC_WALK_CM 30.0f
+
+#define BC_CAM_EYE 0x40u
+#define BC_CAM_UP 0x50u
+#define BC_CAM_TARGET 0x60u
+#define BC_CAM_FAR 0x30u
+#define BC_CAM_NEAR 0x34u
+#define BC_CAM_ASPECT 0x38u
+#define BC_CAM_FOV 0x3cu
 
 static float bc_clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-static int bc_player_forward(float *fx, float *fz) {
+static int bc_is_main_camera(uint32_t eye_p, uint32_t target_p, uint32_t up_p) {
+    if (eye_p < 0x1000u + BC_CAM_EYE || (eye_p & 3u)) return 0;
+    if (target_p != eye_p - BC_CAM_EYE + BC_CAM_TARGET || up_p != eye_p - BC_CAM_EYE + BC_CAM_UP) return 0;
+    uint32_t cam = eye_p - BC_CAM_EYE;
+    if (!bc_guest_readable(cam, 0x70u)) return 0;
+    float far_z = bc_ldf(cam + BC_CAM_FAR), near_z = bc_ldf(cam + BC_CAM_NEAR), aspect = bc_ldf(cam + BC_CAM_ASPECT),
+          fov = bc_ldf(cam + BC_CAM_FOV);
+    if (!(near_z > 0.0f && far_z > near_z && far_z < 1e8f)) return 0;
+    if (!(aspect >= 1.2f && aspect <= 4.0f)) return 0;
+    if (!(fov > 5.0f && fov < 150.0f)) return 0;
+    return 1;
+}
+
+static int bc_player_pose(float *fx, float *fz, float *pos) {
     uint32_t gc = bc_ld32(BC_G_SGAMECONTROL);
     uint32_t sp = bc_ld32(BC_G_SPLAYER);
     if (!gc || !sp || !bc_guest_readable(gc, 0x40u) || !bc_guest_readable(sp, 0x30u)) return 0;
     uint32_t slot = bc_ld32(gc + BC_GC_SLOT);
     if (slot >= 4u) return 0;
     uint32_t pl = bc_ld32(sp + BC_SP_PLAYERS + 4u * slot);
-    if (!pl || !bc_guest_readable(pl + BC_PL_ROT, 16u)) return 0;
+    if (!pl || !bc_guest_readable(pl + BC_PL_POS, 0x20u)) return 0;
+    for (uint32_t i = 0; i < 3u; i++) {
+        pos[i] = bc_ldf(pl + BC_PL_POS + 4u * i);
+        if (!(pos[i] == pos[i]) || pos[i] > 1e9f || pos[i] < -1e9f) return 0;
+    }
     float qx = bc_ldf(pl + BC_PL_ROT), qy = bc_ldf(pl + BC_PL_ROT + 4u), qz = bc_ldf(pl + BC_PL_ROT + 8u),
           qw = bc_ldf(pl + BC_PL_ROT + 12u);
     if (!(qx == qx && qy == qy && qz == qz && qw == qw)) return 0;
     float x = 2.0f * (qx * qz + qw * qy), z = 1.0f - 2.0f * (qx * qx + qy * qy);
     if (!(x * x + z * z > 1e-4f)) return 0;
-    *fx = x;
-    *fz = z;
+    float l = sqrtf(x * x + z * z);
+    *fx = x / l;
+    *fz = z / l;
+    return 1;
+}
+
+static float bc_dist3(const float *a, const float *b) {
+    float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+    return sqrtf(x * x + y * y + z * z);
+}
+
+static int bc_settle_step(int fresh, float dx, float dy, float *yaw_out) {
+    uint64_t now = bc_now_ms();
+    if (fresh) {
+        g_settle = 1;
+        g_settle_t0 = now;
+        g_pose_valid = 0;
+        g_snap_logged = 0;
+    } else if (!g_settle) {
+        return 0;
+    } else if (dx != 0.0f || dy != 0.0f) {
+        g_settle = 0;
+        BC_LOG("camera: start-behind ended (mouse moved)");
+        return 0;
+    } else if (now - g_settle_t0 > BC_SETTLE_MAX_MS) {
+        g_settle = 0;
+        BC_LOG("camera: start-behind gave up (no stable hunter pose within %u ms)", (unsigned)BC_SETTLE_MAX_MS);
+        return 0;
+    }
+    float fx, fz, pos[3];
+    if (!bc_player_pose(&fx, &fz, pos)) return 0;
+    if (!g_pose_valid) {
+        g_pose_valid = 1;
+        memcpy(g_pos_ref, pos, sizeof pos);
+        memcpy(g_pos_prev, pos, sizeof pos);
+        g_fwd_ref[0] = fx;
+        g_fwd_ref[1] = fz;
+        g_stable_t0 = now;
+    } else {
+        float jump = bc_dist3(pos, g_pos_prev);
+        memcpy(g_pos_prev, pos, sizeof pos);
+        if (jump > BC_WARP_CM) {
+            memcpy(g_pos_ref, pos, sizeof pos);
+            g_fwd_ref[0] = fx;
+            g_fwd_ref[1] = fz;
+            g_stable_t0 = now;
+        } else if (bc_dist3(pos, g_pos_ref) > BC_WALK_CM) {
+            g_settle = 0;
+            BC_LOG("camera: start-behind ended (the hunter started moving)");
+            return 0;
+        } else if (fx * g_fwd_ref[0] + fz * g_fwd_ref[1] < 0.9998f) {
+            g_fwd_ref[0] = fx;
+            g_fwd_ref[1] = fz;
+            g_stable_t0 = now;
+        } else if (now - g_stable_t0 >= BC_STABLE_MS) {
+            g_settle = 0;
+            BC_LOG("camera: start-behind settled (hunter pose stable)");
+        }
+    }
+    *yaw_out = atan2f(fx, fz) + g_cfg.start_yaw_offset * (M_PI_F / 180.0f);
+    if (!g_snap_logged) {
+        g_snap_logged = 1;
+        BC_LOG("camera: started behind the hunter (forward %.2f,%.2f -> yaw %.1f deg)", fx, fz,
+            *yaw_out * (180.0f / M_PI_F));
+    }
     return 1;
 }
 
@@ -90,6 +190,25 @@ static float vec_finite(uint32_t p) {
 
 static void detour_builder(BcCpu *c) {
     uint32_t eye_p = c->r[1], target_p = c->r[2], up_p = c->r[3];
+    if (g_cfg.main_only) {
+        if (!bc_is_main_camera(eye_p, target_p, up_p)) {
+            g_other_calls++;
+            if (!g_cam_calls && g_other_calls == 600u && !g_filter_warned) {
+                g_filter_warned = 1;
+                BC_LOG("camera: WARNING - 600 view builds and none look like the main camera (eye*=%08x target*=%08x up*=%08x): "
+                       "set SafeAreaCameraMainOnly=0 if the camera stopped working", (unsigned)eye_p, (unsigned)target_p,
+                    (unsigned)up_p);
+            }
+            g_host.fnhook_call_original(c, BC_FN_BUILDER);
+            return;
+        }
+        g_cam_calls++;
+        if (!g_cam_logged) {
+            g_cam_logged = 1;
+            BC_LOG("camera: main camera recognised (object %08x; %u other view builds skipped before it)",
+                (unsigned)(eye_p - BC_CAM_EYE), (unsigned)g_other_calls);
+        }
+    }
     g_frames++;
     int sample = (g_frames % 30u) == 1u;
     int active = 0;
@@ -123,7 +242,10 @@ static void detour_builder(BcCpu *c) {
             g_last_area = area;
             g_inherit_pending = 1;
             g_area_enter_frame = g_frames;
-            if (area == 0xff) g_cap_n = 0;
+            if (area == 0xff) {
+                g_cap_n = 0;
+                g_settle = 0;
+            }
         }
         if (area == 0xff) {
             if (g_cfg.hunt_defaults && g_cap_n < BC_CAP_MAX && g_frames - g_area_enter_frame >= 60u &&
@@ -188,16 +310,10 @@ static void detour_builder(BcCpu *c) {
                 g_pitch_abs = bc_clampf(g_pitch_abs, g_cfg.pitch_min, g_cfg.pitch_max);
             }
         }
-        int snap = 0;
+        int fresh = g_inherit_pending;
         if (g_inherit_pending) {
             g_inherit_pending = 0;
             g_yaw_abs = atan2f(dxr, dzr);
-            if (g_cfg.start_behind) {
-                g_settle = 1;
-                g_settle_t0 = bc_now_ms();
-                snap = 1;
-                g_snap_logged = 0;
-            }
             float game_pitch = atan2f(dyr, sqrtf(dxr * dxr + dzr * dzr)) * (180.0f / M_PI_F);
             if (g_cfg.vertical) {
                 float start = g_cfg.hunt_pitch_deg != 999.0f ? g_cfg.hunt_pitch_deg
@@ -210,20 +326,9 @@ static void detour_builder(BcCpu *c) {
             BC_LOG("camera: orbit anchored at the class's angle (yaw %.1f deg, pitch %.1f deg) - now world-absolute",
                 g_yaw_abs * (180.0f / M_PI_F), g_pitch_abs);
         }
-        if (!snap && g_settle) {
-            if (dx != 0.0f || dy != 0.0f || bc_now_ms() - g_settle_t0 > BC_SETTLE_MS) g_settle = 0;
-            else snap = 1;
-        }
-        if (snap) {
-            float fx, fz;
-            if (bc_player_forward(&fx, &fz)) {
-                g_yaw_abs = atan2f(fx, fz) + g_cfg.start_yaw_offset * (M_PI_F / 180.0f);
-                if (!g_snap_logged) {
-                    g_snap_logged = 1;
-                    BC_LOG("camera: started behind the hunter (forward %.2f,%.2f -> yaw %.1f deg)", fx, fz,
-                        g_yaw_abs * (180.0f / M_PI_F));
-                }
-            }
+        if (g_cfg.start_behind) {
+            float behind_yaw;
+            if (bc_settle_step(fresh, dx, dy, &behind_yaw)) g_yaw_abs = behind_yaw;
         }
         float use_r = g_cfg.hunt_distance > 0.0f ? g_cfg.hunt_distance
                       : (g_cfg.hunt_defaults && g_hunt_radius > 0.0f ? g_hunt_radius : radius) * g_cfg.distance_scale;
