@@ -18,6 +18,13 @@ typedef struct BcHost {
     uint32_t (*mouse_state)(float *dx, float *dy);
     bool (*textinput_active)(void);
     bool (*chat_active)(void);
+    bool (*overlay_menu_open)(void);
+    bool (*mouse_free)(void);
+    bool (*menuptr_open)(void);
+    bool (*menuptr_cursor_ran)(uint64_t within_ns);
+    const char *(*view_context)(void);
+    void *(*sdl_focus)(void);
+    bool (*sdl_relmode)(void *window);
 } BcHost;
 
 extern BcHost g_host;
