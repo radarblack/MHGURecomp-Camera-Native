@@ -17,8 +17,10 @@ typedef struct BcConfig {
     bool start_behind;
     float start_yaw_offset;
     bool main_only;
-    float target_height;
-    float fit_height;
+    bool anchor_height;
+    float start_height;
+    bool fit_character;
+    float char_height;
     bool pause_ui;
     bool pause_events;
 } BcConfig;
