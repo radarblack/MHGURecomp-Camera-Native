@@ -37,6 +37,9 @@ static int g_cap_n;
 static uint32_t g_area_enter_frame;
 static float g_hunt_radius;
 static float g_hunt_pitch_deg;
+static float g_last_base;
+static float g_last_use_r;
+static int g_have_radius;
 static int g_settle;
 static int g_snap_logged;
 static uint64_t g_settle_t0;
@@ -53,6 +56,7 @@ static int g_filter_warned;
 #define BC_STABLE_MS 700u
 #define BC_WARP_CM 500.0f
 #define BC_WALK_CM 30.0f
+#define BC_FIT_MARGIN 1.3f
 
 #define BC_CAM_EYE 0x40u
 #define BC_CAM_UP 0x50u
@@ -64,11 +68,16 @@ static int g_filter_warned;
 
 static float bc_clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-static int bc_is_main_camera(uint32_t eye_p, uint32_t target_p, uint32_t up_p) {
+static uint32_t bc_main_cam(uint32_t eye_p, uint32_t target_p, uint32_t up_p) {
     if (eye_p < 0x1000u + BC_CAM_EYE || (eye_p & 3u)) return 0;
     if (target_p != eye_p - BC_CAM_EYE + BC_CAM_TARGET || up_p != eye_p - BC_CAM_EYE + BC_CAM_UP) return 0;
     uint32_t cam = eye_p - BC_CAM_EYE;
-    if (!bc_guest_readable(cam, 0x70u)) return 0;
+    return bc_guest_readable(cam, 0x70u) ? cam : 0;
+}
+
+static int bc_is_main_camera(uint32_t eye_p, uint32_t target_p, uint32_t up_p) {
+    uint32_t cam = bc_main_cam(eye_p, target_p, up_p);
+    if (!cam) return 0;
     float far_z = bc_ldf(cam + BC_CAM_FAR), near_z = bc_ldf(cam + BC_CAM_NEAR), aspect = bc_ldf(cam + BC_CAM_ASPECT),
           fov = bc_ldf(cam + BC_CAM_FOV);
     if (!(near_z > 0.0f && far_z > near_z && far_z < 1e8f)) return 0;
@@ -91,11 +100,6 @@ static int bc_in_quest(void) {
     if (!pl || !bc_guest_readable(pl + BC_PL_ZONE, 4u)) return 0;
     uint8_t zone = bc_ld8(pl + BC_PL_ZONE);
     return zone != 0u && zone != 0xffu;
-}
-
-static float bc_camera_fov(uint32_t eye_p, uint32_t target_p, uint32_t up_p) {
-    if (!bc_is_main_camera(eye_p, target_p, up_p)) return 0.0f;
-    return bc_ldf(eye_p - BC_CAM_EYE + BC_CAM_FOV);
 }
 
 static int bc_player_pos(float *pos) {
@@ -126,6 +130,35 @@ static int bc_player_pose(float *fx, float *fz, float *pos) {
 static float bc_dist3(const float *a, const float *b) {
     float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
     return sqrtf(x * x + y * y + z * z);
+}
+
+static int bc_fit_radius(uint32_t cam, float eye_h, float target_y, float player_y, float *out) {
+    float fov = bc_ldf(cam + BC_CAM_FOV), aspect = bc_ldf(cam + BC_CAM_ASPECT);
+    if (!(fov > 5.0f && fov < 150.0f) || !(aspect >= 1.2f && aspect <= 4.0f)) return 0;
+    float half_v = atanf(tanf(fov * (M_PI_F / 360.0f)) / aspect);
+    if (!(half_v > 0.01f && half_v < 1.55f)) return 0;
+    float r = (0.5f * g_cfg.char_height * BC_FIT_MARGIN) / tanf(half_v);
+    for (int i = 0; i < 8; i++) {
+        float pr = asinf(bc_clampf((eye_h - target_y) / r, -0.99f, 0.99f));
+        float dxz = r * cosf(pr);
+        if (!(dxz > 1.0f)) break;
+        float e_axis = atanf((target_y - eye_h) / dxz);
+        float e_top = atanf((player_y + g_cfg.char_height - eye_h) / dxz);
+        float e_foot = atanf((player_y - eye_h) / dxz);
+        float off_top = fabsf(e_top - e_axis), off_foot = fabsf(e_foot - e_axis);
+        float worst = off_top > off_foot ? off_top : off_foot;
+        if (!(worst > 1e-4f)) break;
+        r *= worst / half_v;
+    }
+    *out = r;
+    return 1;
+}
+
+static int bc_anchor_pitch(float target_y, float radius, float player_y, float *out) {
+    float ratio = (player_y + g_cfg.start_height - target_y) / radius;
+    if (!(ratio == ratio) || ratio > 0.98f || ratio < -0.98f) return 0;
+    *out = asinf(ratio) * (180.0f / M_PI_F);
+    return 1;
 }
 
 static int bc_settle_step(int fresh, float dx, float dy, float *yaw_out) {
@@ -340,6 +373,7 @@ static void detour_builder(BcCpu *c) {
             g_last_area = area;
             g_inherit_pending = 1;
             g_area_enter_frame = g_frames;
+            g_have_radius = 0;
             if (area == 0xff) {
                 g_cap_n = 0;
                 g_settle = 0;
@@ -432,39 +466,55 @@ static void detour_builder(BcCpu *c) {
             BC_LOG("camera: orbit anchored at the class's angle (yaw %.1f deg, pitch %.1f deg) - now world-absolute",
                 g_yaw_abs * (180.0f / M_PI_F), g_pitch_abs);
         }
+        int settling = fresh;
         if (g_cfg.start_behind) {
             float behind_yaw;
-            if (bc_settle_step(fresh, dx, dy, &behind_yaw)) g_yaw_abs = behind_yaw;
-        }
-        if (g_cfg.target_height >= 0.0f) {
-            float hpos[3];
-            if (bc_player_pos(hpos)) {
-                target[1] = hpos[1] + g_cfg.target_height;
-                bc_stf(target_p + 4u, target[1]);
+            if (bc_settle_step(fresh, dx, dy, &behind_yaw)) {
+                g_yaw_abs = behind_yaw;
+                settling = 1;
             }
         }
-        float fit_r = 0.0f;
-        float fov_deg = 0.0f;
-        if (g_cfg.fit_height > 0.0f) {
-            fov_deg = bc_camera_fov(eye_p, target_p, up_p);
-            if (fov_deg > 5.0f && fov_deg < 150.0f) fit_r = g_cfg.fit_height * 0.5f / tanf(fov_deg * 0.5f * (M_PI_F / 180.0f));
-        }
-        float hunt_r = (g_cfg.hunt_defaults && g_hunt_radius > 0.0f) ? g_hunt_radius * g_cfg.distance_scale : 0.0f;
-        float use_r;
-        if (g_cfg.hunt_distance > 0.0f) use_r = g_cfg.hunt_distance;
-        else if (fit_r > 0.0f) use_r = fit_r > hunt_r ? fit_r : hunt_r;
-        else use_r = hunt_r > 0.0f ? hunt_r : radius * g_cfg.distance_scale;
+        float base_r;
+        if (g_have_radius && fabsf(radius - g_last_use_r) < 0.05f)
+            base_r = g_last_base;
+        else
+            base_r = (g_cfg.hunt_defaults && g_hunt_radius > 0.0f) ? g_hunt_radius : radius;
+        float use_r = g_cfg.hunt_distance > 0.0f ? g_cfg.hunt_distance : base_r * g_cfg.distance_scale;
         if (fresh)
-            BC_LOG("camera: distance - fov %.1f deg, fit height %.0f -> %.1f; hunt capture %.1f (x%.2f); game %.1f; explicit %.1f -> using %.1f; "
-                   "look-at %.0f above the hunter (target y %.1f)",
-                fov_deg, g_cfg.fit_height, fit_r, g_hunt_radius, g_cfg.distance_scale, radius, g_cfg.hunt_distance, use_r,
-                g_cfg.target_height, target[1]);
+            BC_LOG("camera: distance - game %.1f, hunt capture %.1f, scale %.2f, explicit %.1f -> using %.1f", radius,
+                g_hunt_radius, g_cfg.distance_scale, g_cfg.hunt_distance, use_r);
+        float pl_pos[3];
+        int have_pl = 0;
+        {
+            float fx, fz;
+            have_pl = bc_player_pose(&fx, &fz, pl_pos);
+        }
+        if (g_cfg.fit_character && have_pl) {
+            uint32_t camb = bc_main_cam(eye_p, target_p, up_p);
+            float rmin = 0.0f;
+            float h_eye = (g_cfg.anchor_height && settling) ? pl_pos[1] + g_cfg.start_height : eye[1];
+            if (camb && bc_fit_radius(camb, h_eye, target[1], pl_pos[1], &rmin) && rmin > 0.0f && use_r < rmin) {
+                if (fresh) BC_LOG("camera: radius raised to fit the character (%.1f -> %.1f)", use_r, rmin);
+                use_r = rmin;
+            }
+        }
+        g_last_base = base_r;
+        g_last_use_r = use_r;
+        g_have_radius = 1;
         float pitch_deg = g_cfg.vertical ? g_pitch_abs
                           : g_cfg.hunt_pitch_deg != 999.0f ? g_cfg.hunt_pitch_deg
                           : (g_cfg.level ? 0.0f
                              : (g_cfg.hunt_defaults && g_hunt_pitch_deg != 0.0f ? g_hunt_pitch_deg : g_pitch_abs));
         if (pitch_deg < g_cfg.pitch_min) pitch_deg = g_cfg.pitch_min;
         if (pitch_deg > g_cfg.pitch_max) pitch_deg = g_cfg.pitch_max;
+        if (g_cfg.anchor_height && settling && have_pl) {
+            float ap = 0.0f;
+            if (bc_anchor_pitch(target[1], use_r, pl_pos[1], &ap)) {
+                ap = bc_clampf(ap, g_cfg.pitch_min, g_cfg.pitch_max);
+                g_pitch_abs = ap;
+                pitch_deg = ap;
+            }
+        }
         float pr = pitch_deg * (M_PI_F / 180.0f);
         eye[0] = target[0] + use_r * sinf(g_yaw_abs) * cosf(pr);
         eye[1] = target[1] + use_r * sinf(pr);
