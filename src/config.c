@@ -6,13 +6,16 @@
 
 #include "debug.h"
 
-BcConfig g_cfg = {true, 1.0f, -80.0f, 89.0f};
+BcConfig g_cfg = {true, true, 1.0f, -80.0f, 89.0f};
 
 static void parse_pair(char *line, const char *key, size_t klen, const char *value) {
     if (strlen(line) != klen || strncmp(line, key, klen)) return;
     if (!strcmp(key, "SafeAreaCamera")) {
         g_cfg.safe_area_camera = atoi(value) != 0;
         BC_LOG("config: SafeAreaCamera = %d", g_cfg.safe_area_camera);
+    } else if (!strcmp(key, "SafeAreaCameraLevel")) {
+        g_cfg.level = atoi(value) != 0;
+        BC_LOG("config: SafeAreaCameraLevel = %d", g_cfg.level);
     } else if (!strcmp(key, "SafeAreaCameraSpeed")) {
         g_cfg.speed = (float)atof(value);
         BC_LOG("config: SafeAreaCameraSpeed = %.2f", g_cfg.speed);
@@ -46,12 +49,13 @@ bool bc_config_load(const char *module_dir) {
         char *value = eq + 1;
         while (*key == ' ' || *key == '\t') key++;
         parse_pair(key, "SafeAreaCamera", 15, value);
+        parse_pair(key, "SafeAreaCameraLevel", 19, value);
         parse_pair(key, "SafeAreaCameraSpeed", 19, value);
         parse_pair(key, "SafeAreaCameraPitchMin", 22, value);
         parse_pair(key, "SafeAreaCameraPitchMax", 22, value);
     }
     fclose(f);
-    BC_LOG("config: loaded (SafeAreaCamera=%d Speed=%.2f Pitch %.1f..%.1f)", g_cfg.safe_area_camera, g_cfg.speed,
-        g_cfg.pitch_min, g_cfg.pitch_max);
+    BC_LOG("config: loaded (SafeAreaCamera=%d Level=%d Speed=%.2f Pitch %.1f..%.1f)", g_cfg.safe_area_camera,
+        g_cfg.level, g_cfg.speed, g_cfg.pitch_min, g_cfg.pitch_max);
     return true;
 }
