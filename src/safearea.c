@@ -4,9 +4,14 @@
 #include <string.h>
 
 #include "debug.h"
-#include "safearea_math.h"
+
+#include <math.h>
 
 #include "config.h"
+
+#ifndef M_PI_F
+#define M_PI_F 3.14159265358979f
+#endif
 #include "guest.h"
 #include "host.h"
 #include "platform.h"
@@ -22,8 +27,9 @@ static int g_last_active;
 static uint8_t g_last_area = 0xff;
 static int g_gc_logged;
 static int g_first_call_done;
-static float g_acc_yaw;
-static float g_acc_pitch;
+static float g_yaw_abs;
+static float g_pitch_abs;
+static int g_inherit_pending;
 #define BC_CAP_MAX 120
 static float g_cap_r[BC_CAP_MAX];
 static float g_cap_p[BC_CAP_MAX];
@@ -65,6 +71,7 @@ static void detour_builder(BcCpu *c) {
     int active = 0;
     int reason = R_MOUSE_IDLE;
     float eye[3], target[3];
+    float pitch_deg_out = -999.0f;
     do {
         if (!g_cfg.safe_area_camera) {
             reason = R_CFG_OFF;
@@ -88,10 +95,9 @@ static void detour_builder(BcCpu *c) {
         if (area != g_last_area) {
             BC_LOG("area: %u -> %u (%s)%s", (unsigned)g_last_area, (unsigned)area,
                 area == 0xff ? "QUEST - module idle" : "safe area - module armed",
-                (g_acc_yaw != 0.0f || g_acc_pitch != 0.0f) ? " [orbit accumulator reset]" : "");
+                g_inherit_pending ? " [orbit resets to the class's current angle (hunt-style snap)]" : "");
             g_last_area = area;
-            g_acc_yaw = 0.0f;
-            g_acc_pitch = 0.0f;
+            g_inherit_pending = 1;
             g_area_enter_frame = g_frames;
             if (area == 0xff) g_cap_n = 0;
         }
@@ -148,50 +154,47 @@ static void detour_builder(BcCpu *c) {
             reason = R_VEC_BAD;
             break;
         }
-        float deg = BC_MOUSE_DEG_PER_PX * g_cfg.speed;
         if (dx != 0.0f || dy != 0.0f) {
-            g_acc_yaw += dx * deg;
+            g_yaw_abs += dx * BC_MOUSE_DEG_PER_PX * g_cfg.speed * (M_PI_F / 180.0f);
             if (!g_cfg.level) {
-                g_acc_pitch += -dy * deg;
-                if (g_acc_pitch < g_cfg.pitch_min) g_acc_pitch = g_cfg.pitch_min;
-                if (g_acc_pitch > g_cfg.pitch_max) g_acc_pitch = g_cfg.pitch_max;
+                g_pitch_abs += -dy * BC_MOUSE_DEG_PER_PX * g_cfg.speed;
+                if (g_pitch_abs < g_cfg.pitch_min) g_pitch_abs = g_cfg.pitch_min;
+                if (g_pitch_abs > g_cfg.pitch_max) g_pitch_abs = g_cfg.pitch_max;
             }
         }
-        float use_r = g_cfg.hunt_distance > 0.0f ? g_cfg.hunt_distance : g_hunt_radius;
-        if (g_cfg.hunt_defaults && use_r > 0.0f) {
-            float base_yaw = atan2f(dxr, dzr);
-            float pitch_deg = g_cfg.hunt_pitch_deg != 999.0f ? g_cfg.hunt_pitch_deg
-                              : (g_cfg.level ? 0.0f : g_hunt_pitch_deg);
-            if (g_cfg.level) pitch_deg = 0.0f;
-            if (pitch_deg < g_cfg.pitch_min) pitch_deg = g_cfg.pitch_min;
-            if (pitch_deg > g_cfg.pitch_max) pitch_deg = g_cfg.pitch_max;
-            float yaw = base_yaw + g_acc_yaw * (M_PI_F / 180.0f);
-            float pr = pitch_deg * (M_PI_F / 180.0f);
-            eye[0] = target[0] + use_r * sinf(yaw) * cosf(pr);
-            eye[1] = target[1] + use_r * sinf(pr);
-            eye[2] = target[2] + use_r * cosf(yaw) * cosf(pr);
-        } else {
-            float dpitch = g_acc_pitch;
-            if (g_cfg.level) {
-                float base_pitch = atan2f(dyr, sqrtf(dxr * dxr + dzr * dzr)) * (180.0f / M_PI_F);
-                dpitch = -base_pitch;
-            }
-            bc_orbit(eye, target, g_acc_yaw, dpitch, g_cfg.pitch_min, g_cfg.pitch_max);
+        if (g_inherit_pending) {
+            g_inherit_pending = 0;
+            g_yaw_abs = atan2f(dxr, dzr);
+            g_pitch_abs = g_cfg.level ? 0.0f : atan2f(dyr, sqrtf(dxr * dxr + dzr * dzr)) * (180.0f / M_PI_F);
+            BC_LOG("camera: orbit anchored at the class's angle (yaw %.1f deg, pitch %.1f deg) - now world-absolute",
+                g_yaw_abs * (180.0f / M_PI_F), g_pitch_abs);
         }
+        float use_r = g_cfg.hunt_distance > 0.0f ? g_cfg.hunt_distance
+                      : (g_cfg.hunt_defaults && g_hunt_radius > 0.0f ? g_hunt_radius : radius);
+        float pitch_deg = g_cfg.hunt_pitch_deg != 999.0f ? g_cfg.hunt_pitch_deg
+                          : (g_cfg.level ? 0.0f
+                             : (g_cfg.hunt_defaults && g_hunt_pitch_deg != 0.0f ? g_hunt_pitch_deg : g_pitch_abs));
+        if (pitch_deg < g_cfg.pitch_min) pitch_deg = g_cfg.pitch_min;
+        if (pitch_deg > g_cfg.pitch_max) pitch_deg = g_cfg.pitch_max;
+        float pr = pitch_deg * (M_PI_F / 180.0f);
+        eye[0] = target[0] + use_r * sinf(g_yaw_abs) * cosf(pr);
+        eye[1] = target[1] + use_r * sinf(pr);
+        eye[2] = target[2] + use_r * cosf(g_yaw_abs) * cosf(pr);
         for (int i = 0; i < 3; i++) {
             uint32_t w;
             memcpy(&w, &eye[i], 4);
             bc_st32(eye_p + 4u * (uint32_t)i, w);
         }
+        pitch_deg_out = pitch_deg;
         active = (dx != 0.0f || dy != 0.0f);
         reason = R_OK;
         if (sample)
-            BC_LOGV("frame %u: mouse %.1f,%.1f acc %.1f/%.1f | eye %.1f,%.1f,%.1f", (unsigned)g_frames, dx, dy,
-                g_acc_yaw, g_acc_pitch, eye[0], eye[1], eye[2]);
+            BC_LOGV("frame %u: mouse %.1f,%.1f yaw %.1f pitch %.1f | eye %.1f,%.1f,%.1f", (unsigned)g_frames, dx, dy,
+                g_yaw_abs * (180.0f / M_PI_F), pitch_deg_out, eye[0], eye[1], eye[2]);
     } while (0);
     if (active != g_last_active) {
-        if (active) BC_LOG("camera: ORBITING (mouse-driven, area %u, acc %.1f/%.1f)", (unsigned)g_last_area, g_acc_yaw,
-            g_acc_pitch);
+        if (active) BC_LOG("camera: ORBITING (mouse-driven, area %u, yaw %.1f pitch %.1f)", (unsigned)g_last_area,
+            g_yaw_abs * (180.0f / M_PI_F), pitch_deg_out);
         else BC_LOG("camera: idle (%s)", g_reason[reason]);
         g_last_active = active;
     } else if (!active && sample) {
@@ -251,12 +254,13 @@ bool bc_safearea_install(void) {
         BC_LOG("install: fnhook_set accepted (no fnhook_get to read back - verification by field test)");
     }
     g_hooked_fn = BC_FN_BUILDER;
-    g_acc_yaw = 0.0f;
-    g_acc_pitch = 0.0f;
+    g_yaw_abs = 0.0f;
+    g_pitch_abs = 0.0f;
+    g_inherit_pending = 0;
     g_cap_n = 0;
     g_hunt_radius = 0.0f;
     g_hunt_pitch_deg = 0.0f;
-    BC_LOG("install: armed (gates: area != 255, no UI open; orbit ACCUMULATED over the class's re-derived base%s%s; sensitivity %.2f deg/px, pitch %.1f..%.1f)",
+    BC_LOG("install: armed (gates: area != 255, no UI open; orbit = WORLD-ABSOLUTE yaw/pitch owned by the module, 1:1 the hunt camera's model%s%s; sensitivity %.2f deg/px, pitch %.1f..%.1f)",
         g_cfg.level ? "; LEVEL mode: the view is held even with the ground" : "",
         g_cfg.hunt_defaults ? "; HUNT DEFAULTS: the quest camera's radius/pitch are measured live and re-applied in safe areas" : "",
         BC_MOUSE_DEG_PER_PX * g_cfg.speed, g_cfg.pitch_min, g_cfg.pitch_max);
