@@ -6,7 +6,7 @@
 
 #include "debug.h"
 
-BcConfig g_cfg = {true, 1.0f, -80.0f, 89.0f, 1.60f, 1.90f};
+BcConfig g_cfg = {true, 1.0f, -80.0f, 89.0f};
 
 static void parse_pair(char *line, const char *key, size_t klen, const char *value) {
     if (strlen(line) != klen || strncmp(line, key, klen)) return;
@@ -51,7 +51,7 @@ bool bc_config_load(const char *module_dir) {
         parse_pair(key, "SafeAreaCameraPitchMax", 22, value);
     }
     fclose(f);
-    BC_LOG("config: loaded (SafeAreaCamera=%d Speed=%.2f Pitch %.1f..%.1f Aspect %.2f..%.2f)",
-        g_cfg.safe_area_camera, g_cfg.speed, g_cfg.pitch_min, g_cfg.pitch_max, g_cfg.aspect_min, g_cfg.aspect_max);
+    BC_LOG("config: loaded (SafeAreaCamera=%d Speed=%.2f Pitch %.1f..%.1f)", g_cfg.safe_area_camera, g_cfg.speed,
+        g_cfg.pitch_min, g_cfg.pitch_max);
     return true;
 }
