@@ -11,7 +11,7 @@
 #define BC_VERSION "0.1.0"
 #endif
 
-#define BC_LOG_FILE_NAME "BetterCamera_logs.txt"
+#define BC_LOG_FILE_NAME "ModernCamera_logs.txt"
 
 static void (*g_sink)(const char *fmt, ...);
 static FILE *g_file;
@@ -53,7 +53,7 @@ void bc_debug_open_file(const char *module_dir) {
         time_t now = time(NULL);
         char stamp[64];
         strftime(stamp, sizeof stamp, "%Y-%m-%d %H:%M:%S", localtime(&now));
-        fprintf(g_file, "\n==== BetterCamera debug session %s (v%s) ====\n", stamp, BC_VERSION);
+        fprintf(g_file, "\n==== ModernCamera debug session %s (v%s) ====\n", stamp, BC_VERSION);
         fflush(g_file);
     }
     BC_UNLOCK();
