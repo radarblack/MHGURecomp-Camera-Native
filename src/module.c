@@ -44,7 +44,7 @@ static void worker(void *unused) {
     if (!bc_host_resolve()) {
         BC_LOG("boot: host resolve FAILED - a required port symbol is missing");
         g_install_state = BC_INSTALL_FAILED;
-        g_mh.log("[bettercamera] required port symbols missing: feature off, boot unaffected\n");
+        g_mh.log("[moderncamera] required port symbols missing: feature off, boot unaffected\n");
         return;
     }
     BC_LOG("boot: waiting for the game code (dispatch target 0x9c5e4c = the view-matrix builder)");
@@ -54,10 +54,10 @@ static void worker(void *unused) {
             BC_LOG("boot: game code visible after %llu ms", (unsigned long long)(bc_now_ms() - t0));
             if (bc_host_resolve() && bc_safearea_install()) {
                 g_install_state = BC_INSTALL_OK;
-                g_mh.log("[bettercamera] safe-area camera armed (v%s)\n", BC_VERSION);
+                g_mh.log("[moderncamera] safe-area camera armed (v%s)\n", BC_VERSION);
             } else {
                 g_install_state = BC_INSTALL_FAILED;
-                g_mh.log("[bettercamera] hook install failed: feature off, boot unaffected\n");
+                g_mh.log("[moderncamera] hook install failed: feature off, boot unaffected\n");
             }
             return;
         }
@@ -68,7 +68,7 @@ static void worker(void *unused) {
     }
     BC_LOG("boot: TIMEOUT after 60 s - the port never exposed the look-at; feature off");
     g_install_state = BC_INSTALL_FAILED;
-    g_mh.log("[bettercamera] game code never appeared: feature off, boot unaffected\n");
+    g_mh.log("[moderncamera] game code never appeared: feature off, boot unaffected\n");
 }
 
 static void module_shutdown(void) {
@@ -82,12 +82,12 @@ static void module_shutdown(void) {
 MHGU_ENGINE_MODULE_EXPORT bool mhgu_engine_module_entry(const MhguHost *host, MhguEngineModule *out) {
     if (!host || !out) return false;
     if (host->api < 1 || host->api > MHGU_ENGINE_MODULE_API) {
-        host->log("[bettercamera] built for engine module API %u, this port has %u: not loaded\n",
+        host->log("[moderncamera] built for engine module API %u, this port has %u: not loaded\n",
             (unsigned)MHGU_ENGINE_MODULE_API, host->api ? (unsigned)host->api : 0u);
         return false;
     }
     if (!port_version_checked(host->port_version)) {
-        host->log("[bettercamera] port %s unverified (checked: 0.16., 0.17.): not loaded\n",
+        host->log("[moderncamera] port %s unverified (checked: 0.16., 0.17.): not loaded\n",
             host->port_version ? host->port_version : "?");
         return false;
     }
@@ -97,20 +97,20 @@ MHGU_ENGINE_MODULE_EXPORT bool mhgu_engine_module_entry(const MhguHost *host, Mh
     bc_debug_set_sink(g_mh.log);
     bc_debug_open_file(host->module_dir);
 #endif
-    BC_LOG("module: BetterCamera v%s entry (module api %u, port %s, dir %s)", BC_VERSION, (unsigned)host->api,
+    BC_LOG("module: ModernCamera v%s entry (module api %u, port %s, dir %s)", BC_VERSION, (unsigned)host->api,
         host->port_version ? host->port_version : "?", host->module_dir ? host->module_dir : "?");
     bool cfg = bc_config_load(host->module_dir);
     BC_LOG("module: ini %s", cfg ? "loaded" : "not found (defaults in force)");
     (void)cfg;
-    out->name = "BetterCamera";
+    out->name = "ModernCamera";
     out->shutdown = module_shutdown;
     g_install_state = BC_INSTALL_IDLE;
     if (!bc_thread_start(&g_worker, worker, NULL)) {
-        host->log("[bettercamera] worker start failed: feature off, boot unaffected\n");
+        host->log("[moderncamera] worker start failed: feature off, boot unaffected\n");
         BC_LOG("module: FAIL - worker thread could not start");
         return true;
     }
-    host->log("[bettercamera] v%s loaded\n", BC_VERSION);
+    host->log("[moderncamera] v%s loaded\n", BC_VERSION);
     return true;
 }
 
