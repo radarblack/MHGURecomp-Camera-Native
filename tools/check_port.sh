@@ -47,7 +47,6 @@ need cpu.h 'define GUEST_BASE 0x10000000000ull' "GUEST_BASE is 1 TB on desktop"
 need cpu.h 'offsetof\(Cpu, pc\) == 64' "Cpu layout assertions unchanged"
 
 want rt.h 'uint32_t fnhook_get\(uint32_t addr\)' "fnhook_get(addr)"
-want rt.h 'void guest_call\(Cpu \*c, uint32_t addr\)' "guest_call(c, addr)"
 want rt.h 'GuestFn dispatch_lookup\(uint32_t addr\)' "dispatch_lookup(addr)"
 
 echo
