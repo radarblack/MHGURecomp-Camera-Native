@@ -53,6 +53,20 @@
 #define BC_ZOOM_TAU_S 0.07f
 #define BC_MIN_RADIUS 60.0f
 
+#define BC_FN_WALL 0x383724u
+#define BC_G_COLL_SLOT 0x1a39320u
+#define BC_G_COLL_ZONE 0x1a38bb4u
+#define BC_COLL_GROUP_OFF 0x49u
+#define BC_WALL_RADIUS 20.0f
+#define BC_WALL_KIND 3u
+#define BC_WALL_FLAGS 1u
+#define BC_COLL_MARGIN 2.0f
+#define BC_COLL_RELEASE_CM_S 400.0f
+#define BC_COLL_CENTER_PERP 3.0f
+#define BC_COLL_MAX_PERP 25.0f
+#define BC_COLL_FREE 1e9f
+#define BC_COLL_LOG_HITS 6
+
 enum { S_OVERLAY, S_CHAT, S_TEXT, S_MODFREE, S_MENU, S_MENUCUR, S_RELEASED, S_VIEW, S_EVENT, S_COUNT };
 #define BC_FREEZE_MASK ((1u << S_EVENT) - 1u)
 
@@ -97,7 +111,21 @@ static int g_wheel_acc;
 static int g_wheel_watching;
 static float g_zoom = 1.0f;
 static float g_zoom_target = 1.0f;
-static uint64_t g_zoom_t;
+static float g_dt = 0.016f;
+static uint64_t g_tick_ms;
+
+static uint32_t g_wall_hook;
+static uint32_t g_wall_id;
+static int g_coll_state;
+static int g_coll_reading;
+static int g_coll_slots_ok;
+static int g_coll_confirmed;
+static int g_own_call;
+static uint32_t g_coll_seen[3];
+static float g_coll_cap = BC_COLL_FREE;
+#if BC_DEBUG > 0
+static int g_coll_hit_logs;
+#endif
 
 #if BC_DEBUG > 0
 static const char *const g_signal_name[S_COUNT] = {"the port's menu", "chat", "a text box", "a mod's pointer",
@@ -363,21 +391,156 @@ static bool bc_wheel_watch(void *userdata, void *event) {
 
 static float bc_take_wheel(void) { return (float)__atomic_exchange_n(&g_wheel_acc, 0, __ATOMIC_RELAXED) / BC_WHEEL_FIXED; }
 
-static void bc_zoom_reset(void) {
-    g_zoom = g_zoom_target = 1.0f;
-    g_zoom_t = bc_now_ms();
+static void bc_tick(void) {
+    uint64_t now = bc_now_ms();
+    g_dt = g_tick_ms ? bc_clampf((float)(now - g_tick_ms) * 0.001f, 0.001f, 0.1f) : 0.016f;
+    g_tick_ms = now;
 }
 
+static void bc_zoom_reset(void) { g_zoom = g_zoom_target = 1.0f; }
+
 static void bc_zoom_step(float notches) {
-    uint64_t now = bc_now_ms();
     if (notches != 0.0f) {
         g_zoom_target = bc_clampf(g_zoom_target * powf(BC_ZOOM_STEP, notches), BC_ZOOM_MIN, BC_ZOOM_MAX);
         BC_LOG("camera: zoom x%.2f", g_zoom_target);
     }
-    float dt = bc_clampf((float)(now - g_zoom_t) * 0.001f, 0.001f, 0.1f);
-    g_zoom_t = now;
-    g_zoom += (g_zoom_target - g_zoom) * (1.0f - expf(-dt / BC_ZOOM_TAU_S));
+    g_zoom += (g_zoom_target - g_zoom) * (1.0f - expf(-g_dt / BC_ZOOM_TAU_S));
     if (fabsf(g_zoom - g_zoom_target) < 0.0005f) g_zoom = g_zoom_target;
+}
+
+
+static int bc_coll_read(uint32_t *slot_val, uint32_t *zone_val, uint32_t *slot_pointee) {
+    if (!g_coll_slots_ok) {
+        if (!bc_guest_readable(BC_G_COLL_SLOT, 4u) || !bc_guest_readable(BC_G_COLL_ZONE, 4u)) return 0;
+        g_coll_slots_ok = 1;
+    }
+    uint32_t a = bc_ld32(BC_G_COLL_SLOT), z = bc_ld32(BC_G_COLL_ZONE);
+    if (!a || !z || (a & 3u) || (z & 3u) || !bc_guest_readable(a, 4u) || !bc_guest_readable(z, 0x80u)) return 0;
+    *slot_val = a;
+    *zone_val = z;
+    *slot_pointee = bc_ld32(a);
+    return 1;
+}
+
+static int bc_coll_args(uint32_t *r0, uint32_t *group) {
+    if (g_coll_state < 0 || !g_host.guest_call) return 0;
+    uint32_t v0, v1, d0;
+    if (!bc_coll_read(&v0, &v1, &d0)) return 0;
+    if (g_coll_state == 0) {
+        int reading = v0 == v1 ? 1 : d0 == v1 ? 2 : 0;
+        if (!reading) {
+            if (g_coll_seen[0] != v0 || g_coll_seen[1] != v1 || g_coll_seen[2] != d0) {
+                g_coll_seen[0] = v0;
+                g_coll_seen[1] = v1;
+                g_coll_seen[2] = d0;
+                BC_LOG("collision: waiting - slot %08x=%08x, zone %08x=%08x, *slot=%08x do not agree yet",
+                    (unsigned)BC_G_COLL_SLOT, (unsigned)v0, (unsigned)BC_G_COLL_ZONE, (unsigned)v1, (unsigned)d0);
+            }
+            return 0;
+        }
+        g_coll_reading = reading;
+        g_coll_state = 1;
+        BC_LOG("collision: manager %08x found (reading %d, verified: the two slots agree)", (unsigned)v1, reading);
+    }
+    uint32_t g = bc_ld8(v1 + BC_COLL_GROUP_OFF);
+    if (g >= 32u) return 0;
+    *r0 = g_coll_reading == 1 ? v0 : d0;
+    *group = g;
+    return 1;
+}
+
+static void detour_wall(BcCpu *c) {
+    if (!g_own_call && !g_coll_confirmed && g_coll_state >= 0) {
+        uint32_t v0, v1, d0;
+        uint32_t r0 = c->r[0], group = c->r[3] & 0xffu;
+        if (bc_coll_read(&v0, &v1, &d0)) {
+            uint32_t g = bc_ld8(v1 + BC_COLL_GROUP_OFF);
+            int reading = r0 == v0 ? 1 : r0 == d0 ? 2 : 0;
+            if (reading && g == group) {
+                g_coll_confirmed = 1;
+                g_coll_state = 1;
+                g_coll_reading = reading;
+                BC_LOG("collision: confirmed by the game's own camera query (reading %d, manager %08x, group %u)", reading,
+                    (unsigned)r0, (unsigned)group);
+            } else {
+                g_coll_state = -1;
+                BC_LOG("collision: DISABLED - the game's own query used manager %08x group %u, the slots give %08x / %08x group %u",
+                    (unsigned)r0, (unsigned)group, (unsigned)v0, (unsigned)d0, (unsigned)g);
+            }
+        }
+    }
+    g_host.fnhook_call_original(c, BC_FN_WALL);
+}
+
+static int bc_wall_query(BcCpu *live, uint32_t r0, uint32_t group, const float *from, const float *to, float *pos,
+    float *dist) {
+    uint32_t sp = (live->r[13] - 0x100u) & ~15u;
+    if (!bc_guest_readable(sp, 0x80u)) return -1;
+    const uint32_t p_to = sp + 0x20u, p_from = sp + 0x30u, p_pos = sp + 0x40u, p_dist = sp + 0x50u;
+    for (uint32_t i = 0; i < 3u; i++) {
+        bc_stf(p_to + 4u * i, to[i]);
+        bc_stf(p_from + 4u * i, from[i]);
+        bc_stf(p_pos + 4u * i, 0.0f);
+    }
+    bc_stf(p_to + 12u, 0.0f);
+    bc_stf(p_from + 12u, 0.0f);
+    bc_stf(p_pos + 12u, 0.0f);
+    bc_stf(p_dist, 0.0f);
+    bc_st32(sp, p_pos);
+    bc_st32(sp + 4u, p_dist);
+    bc_st32(sp + 8u, BC_WALL_KIND);
+    bc_st32(sp + 12u, BC_WALL_FLAGS);
+    BcCpu cc;
+    memcpy(&cc, live, sizeof cc);
+    cc.r[0] = r0;
+    cc.r[1] = p_to;
+    cc.r[2] = p_from;
+    cc.r[3] = group;
+    cc.r[13] = sp;
+    cc.f[0] = BC_WALL_RADIUS;
+    g_own_call = 1;
+    g_host.guest_call(&cc, BC_FN_WALL);
+    g_own_call = 0;
+    if (cc.r[0] != 1u) return 0;
+    for (uint32_t i = 0; i < 3u; i++) pos[i] = bc_ldf(p_pos + 4u * i);
+    *dist = bc_ldf(p_dist);
+    return 1;
+}
+
+static float bc_collide(BcCpu *live, const float *target, const float *dir, float want_r, int fresh) {
+    if (fresh) g_coll_cap = BC_COLL_FREE;
+    float goal = BC_COLL_FREE;
+    uint32_t r0, group;
+    if (g_cfg.collision && bc_coll_args(&r0, &group)) {
+        float to[3] = {target[0] + dir[0] * want_r, target[1] + dir[1] * want_r, target[2] + dir[2] * want_r};
+        float pos[3], dist;
+        if (bc_wall_query(live, r0, group, target, to, pos, &dist) == 1) {
+            float w[3] = {pos[0] - target[0], pos[1] - target[1], pos[2] - target[2]};
+            float t = w[0] * dir[0] + w[1] * dir[1] + w[2] * dir[2];
+            float perp2 = w[0] * w[0] + w[1] * w[1] + w[2] * w[2] - t * t;
+            float perp = perp2 > 0.0f ? sqrtf(perp2) : 0.0f;
+            int usable = t == t && perp == perp && t > -1.0f && t < want_r + BC_COLL_MAX_PERP && perp <= BC_COLL_MAX_PERP;
+#if BC_DEBUG > 0
+            if (g_coll_hit_logs < BC_COLL_LOG_HITS) {
+                g_coll_hit_logs++;
+                BC_LOG("collision: hit #%d from %.1f,%.1f,%.1f toward %.1f,%.1f,%.1f -> pos %.1f,%.1f,%.1f dist %.1f | along %.1f off-line %.1f | %s",
+                    g_coll_hit_logs, target[0], target[1], target[2], to[0], to[1], to[2], pos[0], pos[1], pos[2], dist, t,
+                    perp, usable ? "used" : "ignored (not on the segment)");
+            }
+#endif
+            if (usable) {
+                float allowed = t - (perp > BC_COLL_CENTER_PERP ? BC_WALL_RADIUS : 0.0f) - BC_COLL_MARGIN;
+                if (allowed < BC_MIN_RADIUS) allowed = BC_MIN_RADIUS;
+                if (allowed < want_r) goal = allowed;
+            }
+        }
+    }
+    if (goal < g_coll_cap) g_coll_cap = goal;
+    else {
+        g_coll_cap += BC_COLL_RELEASE_CM_S * g_dt;
+        if (g_coll_cap > goal) g_coll_cap = goal;
+    }
+    return g_coll_cap < want_r ? g_coll_cap : want_r;
 }
 
 static void bc_discard_mouse(void) {
@@ -409,6 +572,7 @@ static void detour_builder(BcCpu *c) {
     }
 #endif
     g_frames++;
+    bc_tick();
     float wheel = bc_take_wheel();
     do {
         uint32_t gcp = bc_ld32(BC_G_SGAMECONTROL);
@@ -511,7 +675,6 @@ static void detour_builder(BcCpu *c) {
         use_r *= g_zoom;
         if (use_r < BC_MIN_RADIUS) use_r = BC_MIN_RADIUS;
         g_last_base = base_r;
-        g_last_use_r = use_r;
         g_have_radius = 1;
 
         if (settling && have_pose) {
@@ -520,9 +683,11 @@ static void detour_builder(BcCpu *c) {
         }
 
         float pr = g_pitch_abs * (M_PI_F / 180.0f);
-        eye[0] = target[0] + use_r * sinf(g_yaw_abs) * cosf(pr);
-        eye[1] = target[1] + use_r * sinf(pr);
-        eye[2] = target[2] + use_r * cosf(g_yaw_abs) * cosf(pr);
+        float cp = cosf(pr);
+        float dir[3] = {sinf(g_yaw_abs) * cp, sinf(pr), cosf(g_yaw_abs) * cp};
+        float r_final = bc_collide(c, target, dir, use_r, fresh);
+        g_last_use_r = r_final;
+        for (int i = 0; i < 3; i++) eye[i] = target[i] + r_final * dir[i];
         for (uint32_t i = 0; i < 3u; i++) bc_stf(eye_p + 4u * i, eye[i]);
         if (bc_guest_readable(up_p, 12u)) {
             bc_stf(up_p, 0.0f);
@@ -586,6 +751,29 @@ bool bc_safearea_install(void) {
         BC_LOG("install: WARN - could not hook the event scheduler: events will not pause the camera");
     }
 
+    g_coll_state = 0;
+    g_coll_confirmed = 0;
+    if (!g_cfg.collision) {
+        BC_LOG("install: collision off (SafeAreaCameraCollision=0)");
+    } else if (!g_host.guest_call) {
+        g_coll_state = -1;
+        BC_LOG("install: WARN - the port does not export guest_call: no camera collision");
+    } else if (!bc_guest_readable(BC_FN_WALL, 8u)) {
+        g_coll_state = -1;
+        BC_LOG("install: WARN - the wall query is not readable: no camera collision");
+    } else {
+        uint32_t w = bc_ld32(BC_FN_WALL);
+        if ((w & 0xffff0000u) != 0xe92d0000u || !(w & 0x4000u)) {
+            g_coll_state = -1;
+            BC_LOG("install: WARN - 0x%x starts %08x, not a push that saves lr: the collision address may not match this build",
+                (unsigned)BC_FN_WALL, (unsigned)w);
+        } else {
+            g_wall_id = g_host.hle_register("moderncamera:wallquery", detour_wall);
+            if (g_wall_id && g_host.fnhook_set(BC_FN_WALL, g_wall_id)) g_wall_hook = BC_FN_WALL;
+            BC_LOG("install: camera collision %s (wall query 0x%x, confirmed against the game's own call during a hunt)",
+                g_wall_hook ? "armed" : "armed without the hunt cross-check", (unsigned)BC_FN_WALL);
+        }
+    }
     if (g_host.sdl_add_watch && g_host.sdl_remove_watch && g_host.sdl_add_watch(bc_wheel_watch, NULL)) {
         g_wheel_watching = 1;
         BC_LOG("install: mouse wheel zoom armed");
@@ -610,6 +798,10 @@ void bc_safearea_remove(void) {
     if (g_sched_hook) {
         g_host.fnhook_set(g_sched_hook, 0);
         g_sched_hook = 0;
+    }
+    if (g_wall_hook) {
+        g_host.fnhook_set(g_wall_hook, 0);
+        g_wall_hook = 0;
     }
     if (g_wheel_watching) {
         g_host.sdl_remove_watch(bc_wheel_watch, NULL);
