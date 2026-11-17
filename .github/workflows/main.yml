@@ -1,4 +1,4 @@
-name: Build BetterCamera
+name: Build ModernCamera
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
           - debug
         default: release
       debug_level:
-        description: Debug logging (0 = none, 1 = lifecycle, 2 = verbose + BetterCamera_logs.txt)
+        description: Debug logging (0 = none, 1 = lifecycle, 2 = verbose + ModernCamera_logs.txt)
         type: choice
         options:
           - "0"
@@ -47,7 +47,7 @@ permissions:
   contents: read
 
 env:
-  MODULE_NAME: BetterCamera
+  MODULE_NAME: ModernCamera
 
 jobs:
   compat:
@@ -176,6 +176,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag }}
-          name: BetterCamera ${{ inputs.release_tag }}
+          name: ModernCamera ${{ inputs.release_tag }}
           files: dist/*.zip
           generate_release_notes: true
