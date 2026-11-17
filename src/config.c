@@ -7,7 +7,7 @@
 
 #include "debug.h"
 
-BcConfig g_cfg = {1.0f, false, 1.0f, 100.0f, 188.0f};
+BcConfig g_cfg = {1.0f, false, 1.0f, 100.0f, 188.0f, true};
 
 typedef struct BcKey {
     const char *name;
@@ -22,6 +22,7 @@ static const BcKey k_keys[] = {
     {"SafeAreaCameraDistanceScale", &g_cfg.distance_scale, NULL, 0.1f, 10.0f},
     {"SafeAreaCameraStartHeight", &g_cfg.start_height, NULL, 0.0f, 500.0f},
     {"SafeAreaCameraCharacterHeight", &g_cfg.char_height, NULL, 1.0f, 1000.0f},
+    {"SafeAreaCameraCollision", NULL, &g_cfg.collision, 0.0f, 0.0f},
 };
 
 static char *trim(char *s) {
@@ -66,7 +67,7 @@ bool bc_config_load(const char *module_dir) {
         apply(key, trim(eq + 1));
     }
     fclose(f);
-    BC_LOG("config: loaded (Speed=%.2f InvertY=%d DistanceScale=%.2f StartHeight=%.1f CharacterHeight=%.1f)", g_cfg.speed,
-        g_cfg.invert_y, g_cfg.distance_scale, g_cfg.start_height, g_cfg.char_height);
+    BC_LOG("config: loaded (Speed=%.2f InvertY=%d DistanceScale=%.2f StartHeight=%.1f CharacterHeight=%.1f Collision=%d)", g_cfg.speed,
+        g_cfg.invert_y, g_cfg.distance_scale, g_cfg.start_height, g_cfg.char_height, g_cfg.collision);
     return true;
 }
