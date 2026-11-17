@@ -24,6 +24,8 @@ typedef struct BcHost {
     const char *(*view_context)(void);
     void *(*sdl_focus)(void);
     bool (*sdl_relmode)(void *window);
+    bool (*sdl_add_watch)(bool (*filter)(void *userdata, void *event), void *userdata);
+    void (*sdl_remove_watch)(bool (*filter)(void *userdata, void *event), void *userdata);
 } BcHost;
 
 extern BcHost g_host;
