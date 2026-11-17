@@ -49,7 +49,7 @@ static void apply(const char *key, const char *value) {
 
 bool bc_config_load(const char *module_dir) {
     char path[512];
-    snprintf(path, sizeof path, "%s/BetterCamera.ini", module_dir ? module_dir : ".");
+    snprintf(path, sizeof path, "%s/ModernCamera.ini", module_dir ? module_dir : ".");
     FILE *f = fopen(path, "r");
     if (!f) {
         BC_LOG("config: %s not found - defaults in force", path);
