@@ -33,7 +33,7 @@ static bool port_version_checked(const char *v) {
 
 static bool game_ready(void) {
     if (g_host.dispatch_lookup) return g_host.dispatch_lookup(BC_FN_BUILDER) != NULL;
-    return bc_guest_readable(BC_FN_BUILDER, 16u) && bc_ld32(BC_FN_BUILDER) == 0xe92d4070u;
+    return bc_guest_readable(BC_FN_BUILDER, 16u) && bc_ld32(BC_FN_BUILDER) == BC_BUILDER_PROLOGUE;
 }
 
 static void worker(void *unused) {
