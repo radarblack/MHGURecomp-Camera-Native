@@ -42,6 +42,16 @@
 #define BC_EVENT_MS 250u
 #define BC_MENU_NS 150000000ull
 #define BC_NO_AREA 0xffu
+#define BC_SDL_EVENT_MOUSE_WHEEL 0x403u
+#define BC_SDL_WHEEL_Y 28u
+#define BC_SDL_WHEEL_DIRECTION 32u
+#define BC_SDL_WHEEL_FLIPPED 1u
+#define BC_WHEEL_FIXED 1000.0f
+#define BC_ZOOM_STEP 0.9f
+#define BC_ZOOM_MIN 0.3f
+#define BC_ZOOM_MAX 3.0f
+#define BC_ZOOM_TAU_S 0.07f
+#define BC_MIN_RADIUS 60.0f
 
 enum { S_OVERLAY, S_CHAT, S_TEXT, S_MODFREE, S_MENU, S_MENUCUR, S_RELEASED, S_VIEW, S_EVENT, S_COUNT };
 #define BC_FREEZE_MASK ((1u << S_EVENT) - 1u)
@@ -82,6 +92,12 @@ static uint64_t g_event_ms;
 static int g_seen_relative;
 static int g_seen_view;
 static int g_frozen_prev;
+
+static int g_wheel_acc;
+static int g_wheel_watching;
+static float g_zoom = 1.0f;
+static float g_zoom_target = 1.0f;
+static uint64_t g_zoom_t;
 
 #if BC_DEBUG > 0
 static const char *const g_signal_name[S_COUNT] = {"the port's menu", "chat", "a text box", "a mod's pointer",
@@ -330,6 +346,40 @@ static void bc_log_signals(unsigned m) {
 }
 #endif
 
+static bool bc_wheel_watch(void *userdata, void *event) {
+    (void)userdata;
+    const unsigned char *e = (const unsigned char *)event;
+    uint32_t type, dir;
+    float y;
+    memcpy(&type, e, sizeof type);
+    if (type != BC_SDL_EVENT_MOUSE_WHEEL) return true;
+    memcpy(&y, e + BC_SDL_WHEEL_Y, sizeof y);
+    memcpy(&dir, e + BC_SDL_WHEEL_DIRECTION, sizeof dir);
+    if (!(y == y) || y > 100.0f || y < -100.0f) return true;
+    if (dir == BC_SDL_WHEEL_FLIPPED) y = -y;
+    __atomic_fetch_add(&g_wheel_acc, (int)lroundf(y * BC_WHEEL_FIXED), __ATOMIC_RELAXED);
+    return true;
+}
+
+static float bc_take_wheel(void) { return (float)__atomic_exchange_n(&g_wheel_acc, 0, __ATOMIC_RELAXED) / BC_WHEEL_FIXED; }
+
+static void bc_zoom_reset(void) {
+    g_zoom = g_zoom_target = 1.0f;
+    g_zoom_t = bc_now_ms();
+}
+
+static void bc_zoom_step(float notches) {
+    uint64_t now = bc_now_ms();
+    if (notches != 0.0f) {
+        g_zoom_target = bc_clampf(g_zoom_target * powf(BC_ZOOM_STEP, notches), BC_ZOOM_MIN, BC_ZOOM_MAX);
+        BC_LOG("camera: zoom x%.2f", g_zoom_target);
+    }
+    float dt = bc_clampf((float)(now - g_zoom_t) * 0.001f, 0.001f, 0.1f);
+    g_zoom_t = now;
+    g_zoom += (g_zoom_target - g_zoom) * (1.0f - expf(-dt / BC_ZOOM_TAU_S));
+    if (fabsf(g_zoom - g_zoom_target) < 0.0005f) g_zoom = g_zoom_target;
+}
+
 static void bc_discard_mouse(void) {
     float jx, jy;
     if (g_host.mouse_state) g_host.mouse_state(&jx, &jy);
@@ -359,6 +409,7 @@ static void detour_builder(BcCpu *c) {
     }
 #endif
     g_frames++;
+    float wheel = bc_take_wheel();
     do {
         uint32_t gcp = bc_ld32(BC_G_SGAMECONTROL);
         if (!gcp || !bc_guest_readable(gcp, 0x80u)) break;
@@ -400,6 +451,7 @@ static void detour_builder(BcCpu *c) {
             BC_LOG("camera: mouse look %s", frozen ? "paused (menu, dialogue or UI open)" : "resumed");
         }
 
+        if (frozen) wheel = 0.0f;
         if (!bc_guest_readable(eye_p, 12u) || !bc_guest_readable(target_p, 12u) || !vec_finite(eye_p) ||
             !vec_finite(target_p))
             break;
@@ -427,6 +479,7 @@ static void detour_builder(BcCpu *c) {
             g_inherit_pending = 0;
             g_yaw_abs = atan2f(dxr, dzr);
             g_pitch_abs = 0.0f;
+            bc_zoom_reset();
             BC_LOG("camera: orbit anchored at the game camera's angle (yaw %.1f deg) - now world-absolute",
                 g_yaw_abs * (180.0f / M_PI_F));
         }
@@ -454,6 +507,9 @@ static void detour_builder(BcCpu *c) {
         if (fresh)
             BC_LOG("camera: distance - game %.1f, hunt capture %.1f, scale %.2f -> using %.1f", radius, g_hunt_radius,
                 g_cfg.distance_scale, use_r);
+        bc_zoom_step(wheel);
+        use_r *= g_zoom;
+        if (use_r < BC_MIN_RADIUS) use_r = BC_MIN_RADIUS;
         g_last_base = base_r;
         g_last_use_r = use_r;
         g_have_radius = 1;
@@ -530,6 +586,13 @@ bool bc_safearea_install(void) {
         BC_LOG("install: WARN - could not hook the event scheduler: events will not pause the camera");
     }
 
+    if (g_host.sdl_add_watch && g_host.sdl_remove_watch && g_host.sdl_add_watch(bc_wheel_watch, NULL)) {
+        g_wheel_watching = 1;
+        BC_LOG("install: mouse wheel zoom armed");
+    } else {
+        BC_LOG("install: WARN - no SDL event watch: the mouse wheel will not zoom");
+    }
+
     g_yaw_abs = 0.0f;
     g_pitch_abs = 0.0f;
     g_inherit_pending = 0;
@@ -547,6 +610,10 @@ void bc_safearea_remove(void) {
     if (g_sched_hook) {
         g_host.fnhook_set(g_sched_hook, 0);
         g_sched_hook = 0;
+    }
+    if (g_wheel_watching) {
+        g_host.sdl_remove_watch(bc_wheel_watch, NULL);
+        g_wheel_watching = 0;
     }
     BC_LOG("install: hooks removed");
 }
