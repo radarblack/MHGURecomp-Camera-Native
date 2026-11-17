@@ -1,4 +1,4 @@
-NAME      := BetterCamera
+NAME      := ModernCamera
 VERSION   ?= 0.1.0
 BUILD     ?= release
 OUT       ?= build
