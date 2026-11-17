@@ -37,7 +37,6 @@ bool bc_host_resolve(void) {
     ok &= g_host.fnhook_call_original != NULL;
     g_host.hle_register = (uint32_t (*)(const char *, BcHostFn))sym("hle_register", 1);
     ok &= g_host.hle_register != NULL;
-    g_host.guest_call = (void (*)(BcCpu *, uint32_t))sym("guest_call", 0);
     g_host.dispatch_lookup = (void *(*)(uint32_t))sym("dispatch_lookup", 0);
     g_host.mouse_state = (uint32_t (*)(float *, float *))sdl_sym("SDL_GetRelativeMouseState");
     g_host.textinput_active = (bool (*)(void))sym("textinput_active", 0);
