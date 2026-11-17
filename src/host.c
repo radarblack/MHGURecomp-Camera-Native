@@ -48,6 +48,8 @@ bool bc_host_resolve(void) {
     g_host.view_context = (const char *(*)(void))sym("input_view_context", 0);
     g_host.sdl_focus = (void *(*)(void))sdl_sym("SDL_GetKeyboardFocus");
     g_host.sdl_relmode = (bool (*)(void *))sdl_sym("SDL_GetWindowRelativeMouseMode");
+    g_host.sdl_add_watch = (bool (*)(bool (*)(void *, void *), void *))sdl_sym("SDL_AddEventWatch");
+    g_host.sdl_remove_watch = (void (*)(bool (*)(void *, void *), void *))sdl_sym("SDL_RemoveEventWatch");
     if (!ok) BC_LOG("host: resolution FAILED (a required symbol is missing)");
     return ok;
 }
