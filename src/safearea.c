@@ -14,7 +14,7 @@
 #endif
 
 #define BC_MOUSE_DEG_PER_PX 0.15f
-#define BC_PITCH_MIN (-10.0f)
+#define BC_PITCH_MIN (-89.0f)
 #define BC_PITCH_MAX 89.0f
 
 #define BC_CAP_MAX 120
@@ -512,7 +512,7 @@ bool bc_safearea_install(void) {
             (unsigned)BC_BUILDER_PROLOGUE);
         return false;
     }
-    g_hle_id = g_host.hle_register("bettercamera:viewbuilder", detour_builder);
+    g_hle_id = g_host.hle_register("moderncamera:viewbuilder", detour_builder);
     if (!g_hle_id || !g_host.fnhook_set(BC_FN_BUILDER, g_hle_id)) {
         BC_LOG("install: FAIL - could not hook the view builder");
         return false;
@@ -522,7 +522,7 @@ bool bc_safearea_install(void) {
             (unsigned)g_hle_id);
     g_hooked_fn = BC_FN_BUILDER;
 
-    g_sched_id = g_host.hle_register("bettercamera:scheduler", detour_sched);
+    g_sched_id = g_host.hle_register("moderncamera:scheduler", detour_sched);
     if (g_sched_id && g_host.fnhook_set(BC_FN_SCHED, g_sched_id)) {
         g_sched_hook = BC_FN_SCHED;
         BC_LOG("install: event hook armed (the camera steps aside while a game event plays)");
