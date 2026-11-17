@@ -8,7 +8,17 @@ except ImportError:
     sys.exit("this tool needs pefile: pip install pefile")
 
 PORT_REQUIRED = ["fnhook_set", "fnhook_call_original", "hle_register"]
-PORT_OPTIONAL = ["fnhook_get", "guest_call", "dispatch_lookup"]
+PORT_OPTIONAL = [
+    "fnhook_get",
+    "dispatch_lookup",
+    "textinput_active",
+    "chat_active",
+    "overlay_menu_open",
+    "host_input_mouse_free",
+    "menuptr_open",
+    "menuptr_cursor_ran",
+    "input_view_context",
+]
 
 
 def export_names(path):
