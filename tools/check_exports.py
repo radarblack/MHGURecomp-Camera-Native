@@ -11,6 +11,7 @@ PORT_REQUIRED = ["fnhook_set", "fnhook_call_original", "hle_register"]
 PORT_OPTIONAL = [
     "fnhook_get",
     "dispatch_lookup",
+    "guest_call",
     "textinput_active",
     "chat_active",
     "overlay_menu_open",
