@@ -67,6 +67,8 @@
 #define BC_COLL_FREE 1e9f
 #define BC_COLL_LOG_HITS 6
 #define BC_WALL_STACK 0x1000u
+#define BC_FLOOR_MARGIN 20.0f
+#define BC_FLOOR_MIN_R 30.0f
 #define BC_WALL_PROBE 1.0e6f
 #define BC_WALL_FILL 1234.5f
 
@@ -535,6 +537,13 @@ static int bc_wall_query(BcCpu *live, uint32_t r0, uint32_t group, const float *
     return 1;
 }
 
+static float bc_floor_cap(float target_y, float dir_y, float floor_y) {
+    if (dir_y > -0.001f) return BC_COLL_FREE;
+    float room = target_y - floor_y;
+    float cap = room > 0.0f ? room / -dir_y : 0.0f;
+    return cap < BC_FLOOR_MIN_R ? BC_FLOOR_MIN_R : cap;
+}
+
 static float bc_collide(BcCpu *live, const float *target, const float *dir, float want_r, int fresh) {
     if (fresh) {
         if (g_coll_queries) BC_LOG("collision: previous area - %u queries, %u hits (group %u)", (unsigned)g_coll_queries,
@@ -737,8 +746,16 @@ static void detour_builder(BcCpu *c) {
         float cp = cosf(pr);
         float dir[3] = {sinf(g_yaw_abs) * cp, sinf(pr), cosf(g_yaw_abs) * cp};
         float r_final = bc_collide(c, target, dir, use_r, fresh);
-        g_last_use_r = r_final;
+        if (have_pose) {
+            float r_floor = bc_floor_cap(target[1], dir[1], pose.pos[1] + BC_FLOOR_MARGIN);
+            if (r_floor < r_final) r_final = r_floor;
+        }
         for (int i = 0; i < 3; i++) eye[i] = target[i] + r_final * dir[i];
+        if (have_pose && eye[1] < pose.pos[1] + BC_FLOOR_MARGIN) eye[1] = pose.pos[1] + BC_FLOOR_MARGIN;
+        {
+            float ex = eye[0] - target[0], ey = eye[1] - target[1], ez = eye[2] - target[2];
+            g_last_use_r = sqrtf(ex * ex + ey * ey + ez * ez);
+        }
         for (uint32_t i = 0; i < 3u; i++) bc_stf(eye_p + 4u * i, eye[i]);
         if (bc_guest_readable(up_p, 12u)) {
             bc_stf(up_p, 0.0f);
