@@ -8,6 +8,8 @@ typedef struct BcConfig {
     float start_height;
     float char_height;
     bool collision;
+    unsigned extra_groups;
+    bool probe;
 } BcConfig;
 
 extern BcConfig g_cfg;
