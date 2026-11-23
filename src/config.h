@@ -7,6 +7,8 @@ typedef struct BcConfig {
     float distance_scale;
     float start_height;
     float char_height;
+    bool collision;
+    float collision_margin;
 } BcConfig;
 
 extern BcConfig g_cfg;
