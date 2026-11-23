@@ -60,6 +60,7 @@
 #define BC_WALL2_FLAGS 0u
 #define BC_G_COLL_MGR_GOT 0x1a39320u
 #define BC_G_COLL_GC_GOT 0x1a38bb4u
+#define BC_G_COLL_CTRL 0x188ca48u
 #define BC_COLL_GROUP_OFF 0x49u
 #define BC_WALL_RADIUS 20.0f
 #define BC_COLL_MARGIN 2.0f
@@ -74,6 +75,7 @@
 #define BC_FLOOR_MARGIN 20.0f
 #define BC_FLOOR_MIN_R 30.0f
 #define BC_WALL_PROBE 1.0e6f
+#define BC_WALL2_KIND 2u
 
 enum { S_OVERLAY, S_CHAT, S_TEXT, S_MODFREE, S_MENU, S_MENUCUR, S_RELEASED, S_VIEW, S_EVENT, S_COUNT };
 #define BC_FREEZE_MASK ((1u << S_EVENT) - 1u)
@@ -444,7 +446,7 @@ static int bc_coll_args(uint32_t *mgr_out) {
     uint32_t mv, gv, m, g, grp;
     if (!bc_coll_read(&mv, &gv, &m, &g, &grp)) return 0;
     if (g_coll_state == 0) {
-        int ok = gv == BC_G_SGAMECONTROL && g == bc_ld32(BC_G_SGAMECONTROL) && bc_sane_addr(m);
+        int ok = gv == BC_G_COLL_CTRL && bc_sane_addr(m);
         if (!ok) {
             if (g_coll_seen[0] != mv || g_coll_seen[1] != gv || g_coll_seen[2] != m || g_coll_seen[3] != g) {
                 g_coll_seen[0] = mv;
@@ -489,24 +491,24 @@ static void detour_wall(BcCpu *c) {
 static int bc_wall2_hit(BcCpu *live, uint32_t mgr, uint32_t avatar, uint32_t group, const float *from, const float *to) {
     uint32_t sp = (live->r[13] - 0x100u) & ~15u;
     if (!bc_guest_readable(sp - BC_WALL_STACK, BC_WALL_STACK + 0x100u)) return -1;
-    const uint32_t a_start = sp + 0x20u, a_end = sp + 0x30u;
+    const uint32_t a_start = sp + 0x20u, a_target = sp + 0x30u;
     for (uint32_t i = 0; i < 3u; i++) {
         bc_stf(a_start + 4u * i, from[i]);
-        bc_stf(a_end + 4u * i, to[i]);
+        bc_stf(a_target + 4u * i, to[i]);
     }
     bc_stf(a_start + 12u, 0.0f);
-    bc_stf(a_end + 12u, 0.0f);
-    bc_st32(sp, a_start);
-    bc_st32(sp + 4u, a_end);
-    bc_st32(sp + 8u, BC_WALL2_FLAGS);
+    bc_stf(a_target + 12u, 0.0f);
+    bc_st32(sp, a_target);
+    bc_st32(sp + 4u, BC_WALL2_KIND);
+    bc_st32(sp + 8u, 0u);
     BcCpu cc;
     memcpy(&cc, live, sizeof cc);
     cc.r[0] = mgr;
     cc.r[1] = avatar;
     cc.r[2] = group;
-    cc.r[3] = 0;
+    cc.r[3] = a_start;
     cc.r[13] = sp;
-    cc.f[0] = BC_WALL_RADIUS;
+    cc.f[0] = from[1];
     g_host.guest_call(&cc, BC_FN_WALL2);
     if (cc.r[0] > 1u) {
         g_coll_state = -1;
