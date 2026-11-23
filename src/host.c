@@ -51,6 +51,11 @@ bool bc_host_resolve(void) {
     g_host.sdl_relmode = (bool (*)(void *))sdl_sym("SDL_GetWindowRelativeMouseMode");
     g_host.sdl_add_watch = (bool (*)(bool (*)(void *, void *), void *))sdl_sym("SDL_AddEventWatch");
     g_host.sdl_remove_watch = (void (*)(bool (*)(void *, void *), void *))sdl_sym("SDL_RemoveEventWatch");
+    g_host.sdl_gamepads = (uint32_t * (*)(int *))sdl_sym("SDL_GetGamepads");
+    g_host.sdl_gamepad_from_id = (void *(*)(uint32_t))sdl_sym("SDL_GetGamepadFromID");
+    g_host.sdl_gamepad_axis = (int16_t (*)(void *, int))sdl_sym("SDL_GetGamepadAxis");
+    g_host.sdl_gamepad_button = (bool (*)(void *, int))sdl_sym("SDL_GetGamepadButton");
+    g_host.sdl_free = (void (*)(void *))sdl_sym("SDL_free");
     if (!ok) BC_LOG("host: resolution FAILED (a required symbol is missing)");
     return ok;
 }
