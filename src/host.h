@@ -32,6 +32,11 @@ typedef struct BcHost {
     bool (*sdl_relmode)(void *window);
     bool (*sdl_add_watch)(bool (*filter)(void *userdata, void *event), void *userdata);
     void (*sdl_remove_watch)(bool (*filter)(void *userdata, void *event), void *userdata);
+    uint32_t *(*sdl_gamepads)(int *count);
+    void *(*sdl_gamepad_from_id)(uint32_t id);
+    int16_t (*sdl_gamepad_axis)(void *gamepad, int axis);
+    bool (*sdl_gamepad_button)(void *gamepad, int button);
+    void (*sdl_free)(void *mem);
 } BcHost;
 
 extern BcHost g_host;
