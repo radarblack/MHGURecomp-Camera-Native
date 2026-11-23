@@ -13,7 +13,7 @@
 #define BC_VERSION "0.1.0"
 #endif
 
-static const char *const k_checked_ports[] = {"0.16.", "0.17."};
+static const char *const k_checked_ports[] = {"0.16.", "0.17.", "0.18."};
 
 static MhguHost g_mh;
 static volatile bool g_shutdown_done;
@@ -87,7 +87,7 @@ MHGU_ENGINE_MODULE_EXPORT bool mhgu_engine_module_entry(const MhguHost *host, Mh
         return false;
     }
     if (!port_version_checked(host->port_version)) {
-        host->log("[moderncamera] port %s unverified (checked: 0.16., 0.17.): not loaded\n",
+        host->log("[moderncamera] port %s unverified (checked: 0.16., 0.17., 0.18.): not loaded\n",
             host->port_version ? host->port_version : "?");
         return false;
     }
