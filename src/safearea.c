@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "config.h"
+#include "collision.h"
 #include "debug.h"
 #include "guest.h"
 #include "host.h"
@@ -523,6 +524,9 @@ static void detour_builder(BcCpu *c) {
         eye[0] = target[0] + use_r * sinf(g_yaw_abs) * cosf(pr);
         eye[1] = target[1] + use_r * sinf(pr);
         eye[2] = target[2] + use_r * cosf(g_yaw_abs) * cosf(pr);
+        if (g_cfg.collision) {
+            (void)bc_collision_clamp(c, target, eye);
+        }
         for (uint32_t i = 0; i < 3u; i++) bc_stf(eye_p + 4u * i, eye[i]);
         if (bc_guest_readable(up_p, 12u)) {
             bc_stf(up_p, 0.0f);
