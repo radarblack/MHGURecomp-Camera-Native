@@ -6,7 +6,7 @@ OUT       ?= build
 # 2 = verbose (adds per-frame telemetry, sampled). Example: make linux DEBUG_LEVEL=2
 DEBUG_LEVEL ?= 0
 
-SRC := src/module.c src/safearea.c src/collision.c src/config.c src/host.c src/platform.c
+SRC := src/module.c src/safearea.c src/config.c src/host.c src/platform.c
 OBJ_FLAGS_COMMON := -std=c11 -Wall -Wextra -Wno-unused-parameter -fvisibility=hidden -Isrc -Iinclude \
     -DBC_VERSION='"$(VERSION)"' -DBC_DEBUG=$(DEBUG_LEVEL)
 
