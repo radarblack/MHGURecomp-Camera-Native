@@ -7,7 +7,7 @@
 
 #include "debug.h"
 
-BcConfig g_cfg = {1.0f, false, 1.0f, 100.0f, 188.0f};
+BcConfig g_cfg = {1.0f, false, 1.0f, 100.0f, 188.0f, true, 8.0f};
 
 typedef struct BcKey {
     const char *name;
@@ -22,6 +22,8 @@ static const BcKey k_keys[] = {
     {"SafeAreaCameraDistanceScale", &g_cfg.distance_scale, NULL, 0.1f, 10.0f},
     {"SafeAreaCameraStartHeight", &g_cfg.start_height, NULL, 0.0f, 500.0f},
     {"SafeAreaCameraCharacterHeight", &g_cfg.char_height, NULL, 1.0f, 1000.0f},
+    {"CameraCollision", NULL, &g_cfg.collision, 0.0f, 0.0f},
+    {"CameraCollisionMargin", &g_cfg.collision_margin, NULL, 0.0f, 1000.0f},
 };
 
 static char *trim(char *s) {
