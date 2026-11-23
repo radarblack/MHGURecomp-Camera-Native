@@ -3,6 +3,7 @@
 
 typedef struct BcConfig {
     float speed;
+    float stick_speed;
     bool invert_y;
     float distance_scale;
     float start_height;
