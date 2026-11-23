@@ -15,6 +15,14 @@
 #endif
 
 #define BC_MOUSE_DEG_PER_PX 0.15f
+#define BC_PAD_DEG_PER_S 140.0f
+#define BC_PAD_DEADZONE 0.2f
+#define BC_PAD_AXIS_RIGHTX 2
+#define BC_PAD_AXIS_RIGHTY 3
+#define BC_PAD_BUTTONS 26
+#define BC_PAD_MAX 8
+#define BC_PAD_REFRESH_FRAMES 60u
+#define BC_PAD_GRACE_MS 500u
 #define BC_PITCH_MIN (-89.0f)
 #define BC_PITCH_MAX 89.0f
 
@@ -261,7 +269,7 @@ static int bc_settle_step(int fresh, float dx, float dy, const BcPose *pose, flo
         return 0;
     } else if (dx != 0.0f || dy != 0.0f) {
         g_settle = 0;
-        BC_LOG("camera: start-behind ended (mouse moved)");
+        BC_LOG("camera: start-behind ended (look input)");
         return 0;
     } else if (now - g_settle_t0 > BC_SETTLE_MAX_MS) {
         g_settle = 0;
@@ -675,6 +683,87 @@ static void bc_discard_mouse(void) {
     if (g_host.mouse_state) g_host.mouse_state(&jx, &jy);
 }
 
+typedef struct BcPadSlot {
+    uint32_t id;
+    uint32_t held;
+    uint64_t opened_ms;
+} BcPadSlot;
+
+static BcPadSlot g_pad_slots[BC_PAD_MAX];
+static int g_pad_count;
+static uint32_t g_pad_active;
+static uint32_t g_pad_next_refresh;
+
+static uint32_t bc_pad_buttons(void *pad) {
+    uint32_t mask = 0u;
+    for (int b = 0; b < BC_PAD_BUTTONS; b++)
+        if (g_host.sdl_gamepad_button(pad, b)) mask |= 1u << b;
+    return mask;
+}
+
+static void bc_pad_refresh(void) {
+    int n = 0;
+    uint32_t *ids = g_host.sdl_gamepads(&n);
+    BcPadSlot next[BC_PAD_MAX];
+    int count = 0;
+    uint64_t now = bc_now_ms();
+    for (int i = 0; ids && i < n && count < BC_PAD_MAX; i++) {
+        BcPadSlot slot = {ids[i], 0u, now};
+        int known = 0;
+        for (int j = 0; j < g_pad_count; j++) {
+            if (g_pad_slots[j].id == ids[i]) {
+                slot = g_pad_slots[j];
+                known = 1;
+                break;
+            }
+        }
+        if (!known) {
+            void *pad = g_host.sdl_gamepad_from_id(ids[i]);
+            if (pad) slot.held = bc_pad_buttons(pad);
+        }
+        next[count++] = slot;
+    }
+    if (ids) g_host.sdl_free(ids);
+    memcpy(g_pad_slots, next, sizeof(BcPadSlot) * (size_t)count);
+    g_pad_count = count;
+}
+
+static void bc_pad_look(float *sx, float *sy) {
+    *sx = *sy = 0.0f;
+    if (!g_host.sdl_gamepads || !g_host.sdl_gamepad_from_id || !g_host.sdl_gamepad_axis ||
+        !g_host.sdl_gamepad_button || !g_host.sdl_free)
+        return;
+    if ((int32_t)(g_frames - g_pad_next_refresh) >= 0) {
+        g_pad_next_refresh = g_frames + BC_PAD_REFRESH_FRAMES;
+        bc_pad_refresh();
+    }
+    uint64_t now = bc_now_ms();
+    uint32_t first = 0u;
+    for (int i = 0; i < g_pad_count; i++) {
+        BcPadSlot *slot = &g_pad_slots[i];
+        void *pad = g_host.sdl_gamepad_from_id(slot->id);
+        if (!pad) continue;
+        if (!first) first = slot->id;
+        uint32_t held = bc_pad_buttons(pad);
+        if ((held & ~slot->held) && now - slot->opened_ms >= BC_PAD_GRACE_MS) g_pad_active = slot->id;
+        slot->held = held;
+    }
+    void *pad = g_pad_active ? g_host.sdl_gamepad_from_id(g_pad_active) : NULL;
+    if (!pad) {
+        g_pad_active = first;
+        pad = first ? g_host.sdl_gamepad_from_id(first) : NULL;
+    }
+    if (!pad) return;
+    float x = (float)g_host.sdl_gamepad_axis(pad, BC_PAD_AXIS_RIGHTX) / 32767.0f;
+    float y = (float)g_host.sdl_gamepad_axis(pad, BC_PAD_AXIS_RIGHTY) / 32767.0f;
+    float mag = sqrtf(x * x + y * y);
+    if (!(mag > BC_PAD_DEADZONE)) return;
+    float scale = bc_clampf((mag - BC_PAD_DEADZONE) / (1.0f - BC_PAD_DEADZONE), 0.0f, 1.0f);
+    scale *= scale;
+    *sx = x / mag * scale;
+    *sy = y / mag * scale;
+}
+
 static void detour_builder(BcCpu *c) {
     uint32_t eye_p = c->r[1], target_p = c->r[2], up_p = c->r[3];
     uint32_t cam = bc_main_cam(eye_p, target_p, up_p);
@@ -748,7 +837,9 @@ static void detour_builder(BcCpu *c) {
             break;
         float dx = 0.0f, dy = 0.0f;
         if (g_host.mouse_state) g_host.mouse_state(&dx, &dy);
-        if (frozen) dx = dy = 0.0f;
+        float sx = 0.0f, sy = 0.0f;
+        bc_pad_look(&sx, &sy);
+        if (frozen) dx = dy = sx = sy = 0.0f;
 
         float eye[3], target[3];
         for (uint32_t i = 0; i < 3u; i++) {
@@ -762,6 +853,12 @@ static void detour_builder(BcCpu *c) {
         if (dx != 0.0f || dy != 0.0f) {
             g_yaw_abs -= dx * BC_MOUSE_DEG_PER_PX * g_cfg.speed * (M_PI_F / 180.0f);
             g_pitch_abs += (g_cfg.invert_y ? -dy : dy) * BC_MOUSE_DEG_PER_PX * g_cfg.speed;
+            g_pitch_abs = bc_clampf(g_pitch_abs, BC_PITCH_MIN, BC_PITCH_MAX);
+        }
+        if (sx != 0.0f || sy != 0.0f) {
+            float step = BC_PAD_DEG_PER_S * g_cfg.stick_speed * g_dt;
+            g_yaw_abs -= sx * step * (M_PI_F / 180.0f);
+            g_pitch_abs += (g_cfg.invert_y ? -sy : sy) * step;
             g_pitch_abs = bc_clampf(g_pitch_abs, BC_PITCH_MIN, BC_PITCH_MAX);
         }
 
@@ -779,7 +876,7 @@ static void detour_builder(BcCpu *c) {
         int have_pose = bc_player_pose(&pose);
         int settling = fresh;
         float behind_yaw;
-        if (bc_settle_step(fresh, dx, dy, have_pose ? &pose : NULL, &behind_yaw)) {
+        if (bc_settle_step(fresh, dx + sx, dy + sy, have_pose ? &pose : NULL, &behind_yaw)) {
             g_yaw_abs = behind_yaw;
             settling = 1;
         }
@@ -831,10 +928,10 @@ static void detour_builder(BcCpu *c) {
         }
 
 #if BC_DEBUG > 0
-        int active = dx != 0.0f || dy != 0.0f;
+        int active = dx != 0.0f || dy != 0.0f || sx != 0.0f || sy != 0.0f;
         if (active != g_last_active) {
             g_last_active = active;
-            BC_LOG("camera: %s (yaw %.1f pitch %.1f)", active ? "mouse look" : "idle",
+            BC_LOG("camera: %s (yaw %.1f pitch %.1f)", active ? "look" : "idle",
                 g_yaw_abs * (180.0f / M_PI_F), g_pitch_abs);
         }
 #endif
@@ -853,7 +950,10 @@ bool bc_safearea_install(void) {
         BC_LOG("install: FAIL - host functions missing");
         return false;
     }
-    if (!g_host.mouse_state) BC_LOG("install: WARN - no SDL relative-mouse source: the module will never orbit");
+    if (!g_host.mouse_state) BC_LOG("install: WARN - no SDL relative-mouse source: the mouse will not orbit");
+    if (!g_host.sdl_gamepads || !g_host.sdl_gamepad_from_id || !g_host.sdl_gamepad_axis || !g_host.sdl_gamepad_button ||
+        !g_host.sdl_free)
+        BC_LOG("install: WARN - no SDL gamepad source: the controller will not orbit");
     if (g_hooked_fn) {
         BC_LOG("install: already armed");
         return true;
