@@ -11,7 +11,21 @@
 
 #ifdef _WIN32
 void bc_sleep_ms(unsigned ms) { Sleep(ms); }
-uint64_t bc_now_ms(void) { return (uint64_t)GetTickCount64(); }
+uint64_t bc_now_ns(void) {
+    static volatile LONGLONG freq;
+    LONGLONG f = freq;
+    if (!f) {
+        LARGE_INTEGER q;
+        QueryPerformanceFrequency(&q);
+        f = q.QuadPart;
+        freq = f;
+    }
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    uint64_t ticks = (uint64_t)t.QuadPart, hz = (uint64_t)f;
+    return (ticks / hz) * 1000000000ull + (ticks % hz) * 1000000000ull / hz;
+}
+uint64_t bc_now_ms(void) { return bc_now_ns() / 1000000ull; }
 void *bc_find_symbol(const char *name) {
     HMODULE exe = GetModuleHandleA(NULL);
     return exe ? (void *)GetProcAddress(exe, name) : NULL;
@@ -69,11 +83,12 @@ void bc_sleep_ms(unsigned ms) {
     struct timespec ts = {.tv_sec = ms / 1000, .tv_nsec = (long)(ms % 1000) * 1000000L};
     nanosleep(&ts, NULL);
 }
-uint64_t bc_now_ms(void) {
+uint64_t bc_now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
+uint64_t bc_now_ms(void) { return bc_now_ns() / 1000000ull; }
 void *bc_find_symbol(const char *name) { return dlsym(RTLD_DEFAULT, name); }
 void *bc_find_symbol_in_lib(const char *lib) {
     void *h = lib ? dlopen(lib, RTLD_LAZY | RTLD_NOLOAD) : NULL;
