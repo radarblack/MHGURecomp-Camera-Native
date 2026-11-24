@@ -19,10 +19,9 @@
 #define BC_PAD_DEADZONE 0.2f
 #define BC_PAD_AXIS_RIGHTX 2
 #define BC_PAD_AXIS_RIGHTY 3
-#define BC_PAD_BUTTONS 26
 #define BC_PAD_MAX 8
-#define BC_PAD_REFRESH_FRAMES 60u
-#define BC_PAD_GRACE_MS 500u
+#define BC_PAD_GRACE_NS 500000000ull
+#define BC_PAD_ADOPT_AXIS 16000
 #define BC_PITCH_MIN (-89.0f)
 #define BC_PITCH_MAX 89.0f
 
@@ -52,6 +51,14 @@
 #define BC_MENU_NS 150000000ull
 #define BC_NO_AREA 0xffu
 #define BC_SDL_EVENT_MOUSE_WHEEL 0x403u
+#define BC_SDL_EVENT_WINDOW_FOCUS_LOST 0x20fu
+#define BC_SDL_EVENT_GAMEPAD_AXIS 0x650u
+#define BC_SDL_EVENT_GAMEPAD_BUTTON_DOWN 0x651u
+#define BC_SDL_EVENT_GAMEPAD_ADDED 0x653u
+#define BC_SDL_EVENT_GAMEPAD_REMOVED 0x654u
+#define BC_SDL_GAMEPAD_WHICH 16u
+#define BC_SDL_GAMEPAD_AXIS 20u
+#define BC_SDL_GAMEPAD_VALUE 24u
 #define BC_SDL_WHEEL_Y 28u
 #define BC_SDL_WHEEL_DIRECTION 32u
 #define BC_SDL_WHEEL_FLIPPED 1u
@@ -132,7 +139,7 @@ static int g_wheel_watching;
 static float g_zoom = 1.0f;
 static float g_zoom_target = 1.0f;
 static float g_dt = 0.016f;
-static uint64_t g_tick_ms;
+static uint64_t g_tick_ns;
 
 static uint32_t g_wall_hook;
 static uint32_t g_wall_id;
@@ -397,12 +404,101 @@ static void bc_log_signals(unsigned m) {
 }
 #endif
 
-static bool bc_wheel_watch(void *userdata, void *event) {
+typedef struct BcPadSlot {
+    uint32_t id;
+    int32_t rx;
+    int32_t ry;
+    uint64_t added_ns;
+} BcPadSlot;
+
+static BcPadSlot g_pad_slots[BC_PAD_MAX];
+static uint32_t g_pad_active;
+
+static BcPadSlot *bc_pad_slot(uint32_t id, int create) {
+    for (int i = 0; i < BC_PAD_MAX; i++)
+        if (__atomic_load_n(&g_pad_slots[i].id, __ATOMIC_ACQUIRE) == id) return &g_pad_slots[i];
+    if (!create) return NULL;
+    for (int i = 0; i < BC_PAD_MAX; i++) {
+        uint32_t empty = 0u;
+        if (__atomic_compare_exchange_n(&g_pad_slots[i].id, &empty, id, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return &g_pad_slots[i];
+    }
+    return NULL;
+}
+
+static void bc_pad_clear(void) {
+    for (int i = 0; i < BC_PAD_MAX; i++) {
+        __atomic_store_n(&g_pad_slots[i].rx, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_pad_slots[i].ry, 0, __ATOMIC_RELAXED);
+    }
+}
+
+static void bc_pad_event(uint32_t type, const unsigned char *e) {
+    uint32_t id;
+    memcpy(&id, e + BC_SDL_GAMEPAD_WHICH, sizeof id);
+    if (!id) return;
+    if (type == BC_SDL_EVENT_GAMEPAD_AXIS) {
+        unsigned char axis = e[BC_SDL_GAMEPAD_AXIS];
+        int16_t value;
+        memcpy(&value, e + BC_SDL_GAMEPAD_VALUE, sizeof value);
+        if (axis != BC_PAD_AXIS_RIGHTX && axis != BC_PAD_AXIS_RIGHTY) return;
+        BcPadSlot *slot = bc_pad_slot(id, 1);
+        if (!slot) return;
+        __atomic_store_n(axis == BC_PAD_AXIS_RIGHTX ? &slot->rx : &slot->ry, (int32_t)value, __ATOMIC_RELAXED);
+        if (value > BC_PAD_ADOPT_AXIS || value < -BC_PAD_ADOPT_AXIS) {
+            uint32_t none = 0u;
+            __atomic_compare_exchange_n(&g_pad_active, &none, id, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        }
+    } else if (type == BC_SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+        BcPadSlot *slot = bc_pad_slot(id, 1);
+        if (!slot) return;
+        uint64_t added = __atomic_load_n(&slot->added_ns, __ATOMIC_RELAXED);
+        if (!added || bc_now_ns() - added >= BC_PAD_GRACE_NS) __atomic_store_n(&g_pad_active, id, __ATOMIC_RELEASE);
+    } else if (type == BC_SDL_EVENT_GAMEPAD_ADDED) {
+        BcPadSlot *slot = bc_pad_slot(id, 1);
+        if (slot) __atomic_store_n(&slot->added_ns, bc_now_ns(), __ATOMIC_RELAXED);
+    } else if (type == BC_SDL_EVENT_GAMEPAD_REMOVED) {
+        BcPadSlot *slot = bc_pad_slot(id, 0);
+        if (!slot) return;
+        uint32_t cur = id;
+        __atomic_compare_exchange_n(&g_pad_active, &cur, 0u, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        __atomic_store_n(&slot->rx, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&slot->ry, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&slot->added_ns, 0ull, __ATOMIC_RELAXED);
+        __atomic_store_n(&slot->id, 0u, __ATOMIC_RELEASE);
+    }
+}
+
+static void bc_pad_look(float *sx, float *sy) {
+    *sx = *sy = 0.0f;
+    uint32_t id = __atomic_load_n(&g_pad_active, __ATOMIC_ACQUIRE);
+    if (!id) return;
+    BcPadSlot *slot = bc_pad_slot(id, 0);
+    if (!slot) return;
+    float x = bc_clampf((float)__atomic_load_n(&slot->rx, __ATOMIC_RELAXED) / 32767.0f, -1.0f, 1.0f);
+    float y = bc_clampf((float)__atomic_load_n(&slot->ry, __ATOMIC_RELAXED) / 32767.0f, -1.0f, 1.0f);
+    float mag = sqrtf(x * x + y * y);
+    if (!(mag > BC_PAD_DEADZONE)) return;
+    float scale = bc_clampf((mag - BC_PAD_DEADZONE) / (1.0f - BC_PAD_DEADZONE), 0.0f, 1.0f);
+    scale *= scale;
+    *sx = x / mag * scale;
+    *sy = y / mag * scale;
+}
+
+static bool bc_event_watch(void *userdata, void *event) {
     (void)userdata;
     const unsigned char *e = (const unsigned char *)event;
     uint32_t type, dir;
     float y;
     memcpy(&type, e, sizeof type);
+    if (type >= BC_SDL_EVENT_GAMEPAD_AXIS && type <= BC_SDL_EVENT_GAMEPAD_REMOVED) {
+        bc_pad_event(type, e);
+        return true;
+    }
+    if (type == BC_SDL_EVENT_WINDOW_FOCUS_LOST) {
+        bc_pad_clear();
+        return true;
+    }
     if (type != BC_SDL_EVENT_MOUSE_WHEEL) return true;
     memcpy(&y, e + BC_SDL_WHEEL_Y, sizeof y);
     memcpy(&dir, e + BC_SDL_WHEEL_DIRECTION, sizeof dir);
@@ -415,9 +511,9 @@ static bool bc_wheel_watch(void *userdata, void *event) {
 static float bc_take_wheel(void) { return (float)__atomic_exchange_n(&g_wheel_acc, 0, __ATOMIC_RELAXED) / BC_WHEEL_FIXED; }
 
 static void bc_tick(void) {
-    uint64_t now = bc_now_ms();
-    g_dt = g_tick_ms ? bc_clampf((float)(now - g_tick_ms) * 0.001f, 0.001f, 0.1f) : 0.016f;
-    g_tick_ms = now;
+    uint64_t now = bc_now_ns();
+    g_dt = g_tick_ns ? bc_clampf((float)((double)(now - g_tick_ns) * 1e-9), 0.001f, 0.1f) : 0.016f;
+    g_tick_ns = now;
 }
 
 static void bc_zoom_reset(void) { g_zoom = g_zoom_target = 1.0f; }
@@ -683,87 +779,6 @@ static void bc_discard_mouse(void) {
     if (g_host.mouse_state) g_host.mouse_state(&jx, &jy);
 }
 
-typedef struct BcPadSlot {
-    uint32_t id;
-    uint32_t held;
-    uint64_t opened_ms;
-} BcPadSlot;
-
-static BcPadSlot g_pad_slots[BC_PAD_MAX];
-static int g_pad_count;
-static uint32_t g_pad_active;
-static uint32_t g_pad_next_refresh;
-
-static uint32_t bc_pad_buttons(void *pad) {
-    uint32_t mask = 0u;
-    for (int b = 0; b < BC_PAD_BUTTONS; b++)
-        if (g_host.sdl_gamepad_button(pad, b)) mask |= 1u << b;
-    return mask;
-}
-
-static void bc_pad_refresh(void) {
-    int n = 0;
-    uint32_t *ids = g_host.sdl_gamepads(&n);
-    BcPadSlot next[BC_PAD_MAX];
-    int count = 0;
-    uint64_t now = bc_now_ms();
-    for (int i = 0; ids && i < n && count < BC_PAD_MAX; i++) {
-        BcPadSlot slot = {ids[i], 0u, now};
-        int known = 0;
-        for (int j = 0; j < g_pad_count; j++) {
-            if (g_pad_slots[j].id == ids[i]) {
-                slot = g_pad_slots[j];
-                known = 1;
-                break;
-            }
-        }
-        if (!known) {
-            void *pad = g_host.sdl_gamepad_from_id(ids[i]);
-            if (pad) slot.held = bc_pad_buttons(pad);
-        }
-        next[count++] = slot;
-    }
-    if (ids) g_host.sdl_free(ids);
-    memcpy(g_pad_slots, next, sizeof(BcPadSlot) * (size_t)count);
-    g_pad_count = count;
-}
-
-static void bc_pad_look(float *sx, float *sy) {
-    *sx = *sy = 0.0f;
-    if (!g_host.sdl_gamepads || !g_host.sdl_gamepad_from_id || !g_host.sdl_gamepad_axis ||
-        !g_host.sdl_gamepad_button || !g_host.sdl_free)
-        return;
-    if ((int32_t)(g_frames - g_pad_next_refresh) >= 0) {
-        g_pad_next_refresh = g_frames + BC_PAD_REFRESH_FRAMES;
-        bc_pad_refresh();
-    }
-    uint64_t now = bc_now_ms();
-    uint32_t first = 0u;
-    for (int i = 0; i < g_pad_count; i++) {
-        BcPadSlot *slot = &g_pad_slots[i];
-        void *pad = g_host.sdl_gamepad_from_id(slot->id);
-        if (!pad) continue;
-        if (!first) first = slot->id;
-        uint32_t held = bc_pad_buttons(pad);
-        if ((held & ~slot->held) && now - slot->opened_ms >= BC_PAD_GRACE_MS) g_pad_active = slot->id;
-        slot->held = held;
-    }
-    void *pad = g_pad_active ? g_host.sdl_gamepad_from_id(g_pad_active) : NULL;
-    if (!pad) {
-        g_pad_active = first;
-        pad = first ? g_host.sdl_gamepad_from_id(first) : NULL;
-    }
-    if (!pad) return;
-    float x = (float)g_host.sdl_gamepad_axis(pad, BC_PAD_AXIS_RIGHTX) / 32767.0f;
-    float y = (float)g_host.sdl_gamepad_axis(pad, BC_PAD_AXIS_RIGHTY) / 32767.0f;
-    float mag = sqrtf(x * x + y * y);
-    if (!(mag > BC_PAD_DEADZONE)) return;
-    float scale = bc_clampf((mag - BC_PAD_DEADZONE) / (1.0f - BC_PAD_DEADZONE), 0.0f, 1.0f);
-    scale *= scale;
-    *sx = x / mag * scale;
-    *sy = y / mag * scale;
-}
-
 static void detour_builder(BcCpu *c) {
     uint32_t eye_p = c->r[1], target_p = c->r[2], up_p = c->r[3];
     uint32_t cam = bc_main_cam(eye_p, target_p, up_p);
@@ -951,9 +966,6 @@ bool bc_safearea_install(void) {
         return false;
     }
     if (!g_host.mouse_state) BC_LOG("install: WARN - no SDL relative-mouse source: the mouse will not orbit");
-    if (!g_host.sdl_gamepads || !g_host.sdl_gamepad_from_id || !g_host.sdl_gamepad_axis || !g_host.sdl_gamepad_button ||
-        !g_host.sdl_free)
-        BC_LOG("install: WARN - no SDL gamepad source: the controller will not orbit");
     if (g_hooked_fn) {
         BC_LOG("install: already armed");
         return true;
@@ -1013,11 +1025,11 @@ bool bc_safearea_install(void) {
                 (unsigned)BC_FN_WALL2, g_wall_hook ? "cross-checked" : "not cross-checked");
         }
     }
-    if (g_host.sdl_add_watch && g_host.sdl_remove_watch && g_host.sdl_add_watch(bc_wheel_watch, NULL)) {
+    if (g_host.sdl_add_watch && g_host.sdl_remove_watch && g_host.sdl_add_watch(bc_event_watch, NULL)) {
         g_wheel_watching = 1;
-        BC_LOG("install: mouse wheel zoom armed");
+        BC_LOG("install: SDL event watch armed (mouse wheel zoom, controller look)");
     } else {
-        BC_LOG("install: WARN - no SDL event watch: the mouse wheel will not zoom");
+        BC_LOG("install: WARN - no SDL event watch: the mouse wheel will not zoom and the controller will not orbit");
     }
 
     g_yaw_abs = 0.0f;
@@ -1045,7 +1057,7 @@ void bc_safearea_remove(void) {
         g_wall_hook = 0;
     }
     if (g_wheel_watching) {
-        g_host.sdl_remove_watch(bc_wheel_watch, NULL);
+        g_host.sdl_remove_watch(bc_event_watch, NULL);
         g_wheel_watching = 0;
     }
     BC_LOG("install: hooks removed");
