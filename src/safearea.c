@@ -94,6 +94,7 @@
 
 enum { S_OVERLAY, S_CHAT, S_TEXT, S_MODFREE, S_MENU, S_MENUCUR, S_RELEASED, S_VIEW, S_EVENT, S_COUNT };
 #define BC_FREEZE_MASK ((1u << S_EVENT) - 1u)
+#define BC_PAD_FREEZE_MASK (BC_FREEZE_MASK & ~(1u << S_RELEASED))
 
 typedef struct BcPose {
     uint32_t avatar;
@@ -169,6 +170,11 @@ static int g_last_active;
 #endif
 
 static float bc_clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+static float bc_wrap_pi(float a) {
+    if (a > M_PI_F || a < -M_PI_F) a -= 2.0f * M_PI_F * floorf((a + M_PI_F) / (2.0f * M_PI_F));
+    return a;
+}
 
 static int bc_sane_addr(uint32_t a) { return a >= 0x08000000u && a < 0xF0000000u && !(a & 3u); }
 
@@ -841,6 +847,7 @@ static void detour_builder(BcCpu *c) {
             break;
         }
         int frozen = (signals & BC_FREEZE_MASK) != 0;
+        int pad_frozen = (signals & BC_PAD_FREEZE_MASK) != 0;
         if (frozen != g_frozen_prev) {
             g_frozen_prev = frozen;
             BC_LOG("camera: mouse look %s", frozen ? "paused (menu, dialogue or UI open)" : "resumed");
@@ -854,7 +861,8 @@ static void detour_builder(BcCpu *c) {
         if (g_host.mouse_state) g_host.mouse_state(&dx, &dy);
         float sx = 0.0f, sy = 0.0f;
         bc_pad_look(&sx, &sy);
-        if (frozen) dx = dy = sx = sy = 0.0f;
+        if (frozen) dx = dy = 0.0f;
+        if (pad_frozen) sx = sy = 0.0f;
 
         float eye[3], target[3];
         for (uint32_t i = 0; i < 3u; i++) {
@@ -876,6 +884,7 @@ static void detour_builder(BcCpu *c) {
             g_pitch_abs += (g_cfg.invert_y ? -sy : sy) * step;
             g_pitch_abs = bc_clampf(g_pitch_abs, BC_PITCH_MIN, BC_PITCH_MAX);
         }
+        g_yaw_abs = bc_wrap_pi(g_yaw_abs);
 
         int fresh = g_inherit_pending;
         if (fresh) {
