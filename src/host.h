@@ -2,9 +2,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef struct BcCpu {
+typedef struct __attribute__((aligned(16))) BcCpu {
     uint32_t r[16];
+    uint8_t reserved[256 - 64];
+    float f[64];
 } BcCpu;
+
+_Static_assert(sizeof(BcCpu) == 512, "BcCpu must match the port's Cpu");
+_Static_assert(__builtin_offsetof(BcCpu, f) == 256, "BcCpu VFP file must sit at 256");
 
 typedef void (*BcHostFn)(BcCpu *c);
 
@@ -14,6 +19,7 @@ typedef struct BcHost {
     void (*fnhook_call_original)(BcCpu *c, uint32_t addr);
     uint32_t (*hle_register)(const char *name, BcHostFn fn);
     void *(*dispatch_lookup)(uint32_t addr);
+    void (*guest_call)(BcCpu *c, uint32_t addr);
     uint32_t (*mouse_state)(float *dx, float *dy);
     bool (*textinput_active)(void);
     bool (*chat_active)(void);
