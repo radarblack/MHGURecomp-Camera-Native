@@ -40,6 +40,7 @@ bool bc_host_resolve(void) {
     g_host.dispatch_lookup = (void *(*)(uint32_t))sym("dispatch_lookup", 0);
     g_host.mouse_state = (uint32_t (*)(float *, float *))sdl_sym("SDL_GetRelativeMouseState");
     g_host.textinput_active = (bool (*)(void))sym("textinput_active", 0);
+    g_host.guest_call = (void (*)(BcCpu *, uint32_t))sym("guest_call", 0);
     g_host.chat_active = (bool (*)(void))sym("chat_active", 0);
     g_host.overlay_menu_open = (bool (*)(void))sym("overlay_menu_open", 0);
     g_host.mouse_free = (bool (*)(void))sym("host_input_mouse_free", 0);
