@@ -13,8 +13,6 @@
 #define BC_VERSION "0.1.0"
 #endif
 
-static const char *const k_checked_ports[] = {"0.16.", "0.17."};
-
 static MhguHost g_mh;
 static volatile bool g_shutdown_done;
 
@@ -23,13 +21,6 @@ static volatile int g_install_state;
 #define BC_INSTALL_IDLE 0
 #define BC_INSTALL_OK 1
 #define BC_INSTALL_FAILED 2
-
-static bool port_version_checked(const char *v) {
-    if (!v) return false;
-    for (size_t i = 0; i < sizeof k_checked_ports / sizeof k_checked_ports[0]; i++)
-        if (!strncmp(v, k_checked_ports[i], strlen(k_checked_ports[i]))) return true;
-    return false;
-}
 
 static bool game_ready(void) {
     if (g_host.dispatch_lookup) return g_host.dispatch_lookup(BC_FN_BUILDER) != NULL;
@@ -51,6 +42,7 @@ static void worker(void *unused) {
     while (bc_now_ms() - t0 < 60000u) {
         if (g_shutdown_done) return;
         if (game_ready()) {
+            if (g_shutdown_done) return;
             BC_LOG("boot: game code visible after %llu ms", (unsigned long long)(bc_now_ms() - t0));
             if (bc_host_resolve() && bc_safearea_install()) {
                 g_install_state = BC_INSTALL_OK;
@@ -75,8 +67,8 @@ static void module_shutdown(void) {
     if (g_shutdown_done) return;
     g_shutdown_done = true;
     BC_LOG("module: shutdown (install state %d)", g_install_state);
-    bc_safearea_remove();
     if (g_worker.started) bc_thread_join(&g_worker, 5000u);
+    bc_safearea_remove();
 }
 
 MHGU_ENGINE_MODULE_EXPORT bool mhgu_engine_module_entry(const MhguHost *host, MhguEngineModule *out) {
@@ -84,11 +76,6 @@ MHGU_ENGINE_MODULE_EXPORT bool mhgu_engine_module_entry(const MhguHost *host, Mh
     if (host->api < 1 || host->api > MHGU_ENGINE_MODULE_API) {
         host->log("[moderncamera] built for engine module API %u, this port has %u: not loaded\n",
             (unsigned)MHGU_ENGINE_MODULE_API, host->api ? (unsigned)host->api : 0u);
-        return false;
-    }
-    if (!port_version_checked(host->port_version)) {
-        host->log("[moderncamera] port %s unverified (checked: 0.16., 0.17.): not loaded\n",
-            host->port_version ? host->port_version : "?");
         return false;
     }
     g_mh = *host;
